@@ -11,7 +11,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write   # needed by softprops/action-gh-release to create the release
 
 jobs:
   publish:
