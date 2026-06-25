@@ -51,7 +51,7 @@
   "dependencies": {
     "agentproc": "^0.1.1",
     "js-yaml": "^5.1.0",
-    "marked": "^18.0.5",
+    "marked": "^4.3.0",
     "sanitize-html": "^2.17.5"
   }
 }
