@@ -19,7 +19,7 @@ createProfile(async ({ message, sessionId, sendPartial }) => {
   const model = process.env.CLAUDE_MODEL || 'claude-sonnet-4-5';
 
   const invoke = async (sid) => {
-    const args = ['--print', '--dangerously-skip-permissions'];
+    const args = ['--print', '--verbose', '--dangerously-skip-permissions'];
     if (model) args.push('--model', model);
     if (sid) args.push('--resume', sid);
     return streamJsonCli('claude', args, message, 'arg', sendPartial);
