@@ -10,12 +10,17 @@
 
 ## 极速上手
 
-> 🤖 **推荐方式**：让 Agent 帮你安装和配置。将 [SKILL.md](./SKILL.md) 交给任意 AI Agent，说「按照这个 Skill 帮我把这个项目跑起来」即可全程自动化。
+把下面这句话发给你的 AI Agent，全程自动完成：
 
-手动安装步骤：
+```
+请阅读 https://raw.githubusercontent.com/jeffkit/agently-mail-client/main/SKILL.md 并按步骤帮我完整部署 agently-mail-client
+```
+
+<details>
+<summary>手动安装步骤</summary>
 
 ```bash
-# 1. 安装 agently-cli（Agently Mail 的命令行工具）
+# 1. 安装 agently-cli
 npm install -g @tencent-qqmail/agently-cli
 
 # 2. 登录授权（会打开浏览器完成 OAuth）
@@ -32,9 +37,11 @@ npm install
 # 5. 创建配置文件
 cp email-profiles.example.yaml email-profiles.yaml
 
-# 6. 启动（每 60 秒轮询一次邮箱）
-POLL_INTERVAL_MS=60000 node bin/cli.js --config email-profiles.yaml
+# 6. 启动（每 2 分钟轮询一次邮箱）
+POLL_INTERVAL_MS=120000 node bin/cli.js --config email-profiles.yaml
 ```
+
+</details>
 
 ## 使用方法
 
@@ -45,7 +52,7 @@ POLL_INTERVAL_MS=60000 node bin/cli.js --config email-profiles.yaml
 
 ```bash
 # 调试模式：DRY_RUN=1 不实际发送邮件，echo profile 无需 AI CLI
-DRY_RUN=1 POLL_INTERVAL_MS=30000 node bin/cli.js --config email-profiles.example.yaml
+DRY_RUN=1 POLL_INTERVAL_MS=120000 node bin/cli.js --config email-profiles.example.yaml
 ```
 
 ## 工作原理

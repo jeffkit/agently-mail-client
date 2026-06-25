@@ -7,10 +7,6 @@ description: 帮助用户从零安装并启动 agently-mail-client，让任意 A
 
 让 AI（Claude / Cursor / agy 等）通过邮件被调用 —— 用户发邮件提问，AI 自动回复。本 Skill 指导 Agent 完整完成从零安装到收发邮件全链路。
 
-> **极速上手**：把下面这句话发给你的 Agent，它会自动完成所有步骤：
->
-> `@SKILL.md 帮我完整部署 agently-mail-client`
-
 ---
 
 ## 阶段一：安装并授权 agently-cli
