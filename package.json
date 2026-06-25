@@ -27,6 +27,19 @@
     "@tencent-qqmail/agently-cli": ">=1.0.0"
   },
   "license": "MIT",
+  "author": "jeffkit <bbmyth@gmail.com>",
+  "homepage": "https://github.com/jeffkit/agently-mail-client#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeffkit/agently-mail-client.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jeffkit/agently-mail-client/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "files": [
     "src/",
     "bin/",
