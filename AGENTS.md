@@ -80,7 +80,7 @@ AGENT_MESSAGE="hello" node profiles/echo.js
 AGENT_MESSAGE="第二轮" AGENT_SESSION_ID="test-123" AGENT_FROM_USER="user@example.com" node profiles/echo.js
 
 # 启动 bridge（dry-run 不实际发邮件）
-DRY_RUN=1 POLL_INTERVAL_MS=30000 node bin/cli.js --config email-profiles.example.yaml
+DRY_RUN=1 POLL_INTERVAL_MS=120000 node bin/cli.js --config email-profiles.example.yaml
 ```
 
 ## 修改注意事项

@@ -7,6 +7,10 @@ description: 帮助用户从零安装并启动 agently-mail-client，让任意 A
 
 让 AI（Claude / Cursor / agy 等）通过邮件被调用 —— 用户发邮件提问，AI 自动回复。本 Skill 指导 Agent 完整完成从零安装到收发邮件全链路。
 
+> **极速上手**：把下面这句话发给你的 Agent，它会自动完成所有步骤：
+>
+> `@SKILL.md 帮我完整部署 agently-mail-client`
+
 ---
 
 ## 阶段一：安装并授权 agently-cli
@@ -109,8 +113,8 @@ which agy       # agy CLI     → 对应 agy profile
 ### 步骤 7 — 启动 bridge
 
 ```bash
-# 开发/测试（每 30 秒轮询，方便快速验证）
-POLL_INTERVAL_MS=30000 node bin/cli.js --config email-profiles.yaml
+# 开发/测试（每 2 分钟轮询，避免触发接口限频）
+POLL_INTERVAL_MS=120000 node bin/cli.js --config email-profiles.yaml
 
 # 生产环境（每 5 分钟轮询）
 POLL_INTERVAL_MS=300000 nohup node bin/cli.js --config email-profiles.yaml > bridge.log 2>&1 &
@@ -195,7 +199,7 @@ deny_action: silent
 3. agently-cli +me               ← 获取邮箱地址
 4. git clone + npm install       ← 部署项目
 5. cp email-profiles.example.yaml email-profiles.yaml
-6. POLL_INTERVAL_MS=30000 node bin/cli.js --config email-profiles.yaml
+6. POLL_INTERVAL_MS=120000 node bin/cli.js --config email-profiles.yaml
 7. 发测试邮件 → 等待 AI 回复 ✅
 ```
 

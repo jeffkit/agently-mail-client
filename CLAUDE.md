@@ -14,7 +14,7 @@ agently-mail-client is a standalone **Email Channel Adapter** implementing the A
 # Start the bridge (default config: ./email-profiles.yaml, 5-min poll)
 npm start
 node bin/cli.js
-DRY_RUN=1 POLL_INTERVAL_MS=30000 node bin/cli.js --config email-profiles.example.yaml
+DRY_RUN=1 POLL_INTERVAL_MS=120000 node bin/cli.js --config email-profiles.example.yaml
 
 # Run the test suite (node --test)
 npm test
