@@ -17,45 +17,29 @@
  */
 
 const { createProfile } = require('../src/index');
-const { spawn } = require('child_process');
-const readline = require('readline');
-
-const TIMEOUT_MS = 300_000;
+const { spawnWithTimeout, withResumeFallback } = require('../src/spawn');
+const { PROFILE_TIMEOUT_MS } = require('../src/constants');
 
 /**
  * @param {string} message
  * @param {string} sessionId  thread_id or empty
- * @param {(chunk: string) => void} onChunk
+ * @param {(chunk: string) => void} [onChunk]
  * @returns {Promise<{ sessionId: string, responseText: string }>}
  */
-function runCodex(message, sessionId, onChunk) {
-  return new Promise((resolve, reject) => {
-    const args = ['exec'];
-    if (sessionId) {
-      args.push('resume', sessionId);
-    }
-    args.push(message, '--dangerously-bypass-approvals-and-sandbox', '--json');
+async function runCodex(message, sessionId, onChunk) {
+  const args = ['exec'];
+  if (sessionId) {
+    args.push('resume', sessionId);
+  }
+  args.push(message, '--dangerously-bypass-approvals-and-sandbox', '--json');
 
-    const child = spawn('codex', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    child.stdin.end();
+  const chunks = [];
+  let threadId = sessionId || '';
+  let completed = false;
 
-    const stderrChunks = [];
-    child.stderr.on('data', (d) => stderrChunks.push(d));
-
-    let threadId = sessionId || '';
-    let timedOut = false;
-    const chunks = [];
-    let completed = false;
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      reject(new Error(`codex timed out after ${TIMEOUT_MS / 1000}s`));
-    }, TIMEOUT_MS);
-
-    const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-
-    rl.on('line', (line) => {
+  const result = await spawnWithTimeout('codex', args, {
+    timeoutMs: PROFILE_TIMEOUT_MS,
+    onLine: (line) => {
       if (!line.trim()) return;
       let event;
       try { event = JSON.parse(line); } catch { return; }
@@ -66,44 +50,31 @@ function runCodex(message, sessionId, onChunk) {
         const text = event.item.text || '';
         if (text) {
           chunks.push(text);
-          onChunk(text);
+          if (onChunk) onChunk(text);
         }
       } else if (event.type === 'turn.completed') {
         completed = true;
       }
-    });
-
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (timedOut) return;
-      rl.close();
-
-      if (completed || chunks.length > 0) {
-        resolve({ sessionId: threadId, responseText: chunks.join('') });
-      } else {
-        const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-        reject(new Error(
-          `codex exited with code ${code}, no agent_message${stderr ? `\n${stderr}` : ''}`,
-        ));
-      }
-    });
-
-    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    },
   });
+
+  if (result.timedOut) {
+    throw new Error(`codex timed out after ${PROFILE_TIMEOUT_MS / 1000}s`);
+  }
+
+  if (completed || chunks.length > 0) {
+    return { sessionId: threadId, responseText: chunks.join('') };
+  }
+
+  const stderrTail = (result.stderr || '').trim().slice(-512);
+  const reason = result.signal
+    ? `killed by signal ${result.signal}`
+    : `exited with code ${result.code}`;
+  throw new Error(`codex ${reason}, no agent_message` + (stderrTail ? `\n${stderrTail}` : ''));
 }
 
 createProfile(async ({ message, sessionId, sendPartial }) => {
-  let result;
-  try {
-    result = await runCodex(message, sessionId, sendPartial);
-  } catch (err) {
-    if (sessionId) {
-      process.stderr.write(`[codex] session ${sessionId} resume failed: ${err.message}\n`);
-      result = await runCodex(message, '', sendPartial);
-    } else {
-      throw err;
-    }
-  }
-
-  return { response: '', sessionId: result.sessionId || undefined };
+  const invoke = (sid) => runCodex(message, sid, sendPartial);
+  const { sessionId: newSid } = await withResumeFallback(invoke, sessionId, 'codex');
+  return { response: '', sessionId: newSid || undefined };
 });

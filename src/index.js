@@ -114,7 +114,10 @@ function createEmailBridge(options = {}) {
         const { afterTimestamp } = JSON.parse(fs.readFileSync(cursorFile, 'utf8'));
         if (afterTimestamp) return afterTimestamp;
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      // 游标损坏不能静默：进程会从 now 重启，丢掉之前未处理的批次
+      process.stderr.write(`[email-bridge] Failed to load poll cursor: ${err.message}\n`);
+    }
     return null;
   }
 
@@ -122,7 +125,10 @@ function createEmailBridge(options = {}) {
     try {
       fs.mkdirSync(storeDir, { recursive: true });
       fs.writeFileSync(cursorFile, JSON.stringify({ afterTimestamp: ts }, null, 2), 'utf8');
-    } catch { /* ignore */ }
+    } catch (err) {
+      // 持久化失败不能静默：进程重启后会重复处理上一批
+      process.stderr.write(`[email-bridge] Failed to save poll cursor: ${err.message}\n`);
+    }
   }
 
   const mail       = new AgentlyMailClient();
@@ -181,6 +187,23 @@ function createEmailBridge(options = {}) {
   }
 
   /**
+   * Lightweight trace id generator: 6 hex chars. Used to correlate log lines
+   * across the poll → dispatch → reply chain for a single message.
+   */
+  function traceId() {
+    return Math.random().toString(16).slice(2, 8);
+  }
+
+  /**
+   * Tagged logger — writes a single line with [email-bridge] prefix + trace id.
+   * @param {string} tid
+   * @param {string} msg
+   */
+  function log(tid, msg) {
+    process.stderr.write(`[email-bridge]${tid ? ` [${tid}]` : ''} ${msg}\n`);
+  }
+
+  /**
    * Handle a sender that failed ACL checks: log it and optionally notify.
    */
   async function handleDenied(client, msg, reason) {
@@ -218,23 +241,20 @@ function createEmailBridge(options = {}) {
    */
   async function dispatchAndReply(message_id, subject, fromEmail, client, isRetry = false) {
     if (processingSet.has(message_id)) {
-      process.stderr.write(
-        `[email-bridge] Skipping duplicate dispatch for ${message_id} (already in progress)\n`,
-      );
+      log('', `Skipping duplicate dispatch for ${message_id} (already in progress)`);
       return true;
     }
     processingSet.add(message_id);
+    const tid = traceId();
     try {
       const tag = isRetry ? '[RETRY]' : '';
-      process.stderr.write(
-        `[email-bridge]${tag} Processing: "${subject}" from ${fromEmail} (${message_id})\n`,
-      );
+      log(tid, `${tag} Processing: "${subject}" from ${fromEmail} (${message_id})`);
 
       let fullMsg;
       try {
         fullMsg = client.read(message_id);
       } catch (err) {
-        process.stderr.write(`[email-bridge]${tag} Failed to read ${message_id}: ${err.message}\n`);
+        log(tid, `${tag} Failed to read ${message_id}: ${err.message}`);
         pending.markFailed(message_id, `read failed: ${err.message}`);
         return false;
       }
@@ -244,16 +264,14 @@ function createEmailBridge(options = {}) {
       try {
         resolvedProfile = dispatcher.resolveProfile(fullMsg.subject || '');
       } catch (err) {
-        process.stderr.write(`[email-bridge]${tag} Profile resolution failed: ${err.message}\n`);
+        log(tid, `${tag} Profile resolution failed: ${err.message}`);
         pending.markFailed(message_id, `profile resolve failed: ${err.message}`);
         return false;
       }
 
       // Per-profile ACL check (global ACL already passed in poll handler)
       if (acl.checkProfile(resolvedProfile.profileName, fromEmail) === 'deny') {
-        process.stderr.write(
-          `[email-bridge]${tag} ACL denied profile "${resolvedProfile.profileName}" for ${fromEmail}\n`,
-        );
+        log(tid, `${tag} ACL denied profile "${resolvedProfile.profileName}" for ${fromEmail}`);
         // Build a minimal msg-like object for handleDenied (retry path may not have full msg)
         const msgSummary = { message_id, subject, from: { email: fromEmail } };
         await handleDenied(client, msgSummary, `profile "${resolvedProfile.profileName}" not allowed`);
@@ -262,31 +280,30 @@ function createEmailBridge(options = {}) {
 
       let response, profileName;
       try {
-        ({ response, profileName } = dispatcher.dispatch(fullMsg, dryRun));
+        ({ response, profileName } = await dispatcher.dispatch(fullMsg, dryRun));
       } catch (err) {
-        process.stderr.write(`[email-bridge]${tag} Dispatch failed for ${message_id}: ${err.message}\n`);
+        const failedAt = new Date().toISOString();
+        log(tid, `${tag} Dispatch failed for ${message_id} (profile=${resolvedProfile.profileName}) at ${failedAt}: ${err.message}`);
         pending.markFailed(message_id, `dispatch failed: ${err.message}`);
         return false;
       }
 
-      process.stderr.write(
-        `[email-bridge]${tag} Profile: ${profileName} → ${response.length} chars\n`,
-      );
+      log(tid, `${tag} Profile: ${profileName} → ${response.length} chars`);
 
       if (!dryRun) {
         try {
           const htmlResponse = convertMarkdownToHtml(response);
           client.reply(message_id, htmlResponse, { bodyFormat: 'html' });
           pending.markReplied(message_id);
-          process.stderr.write(`[email-bridge]${tag} Replied (HTML): ${message_id}\n`);
+          log(tid, `${tag} Replied (HTML): ${message_id}`);
         } catch (err) {
-          process.stderr.write(`[email-bridge]${tag} Reply failed for ${message_id}: ${err.message}\n`);
+          log(tid, `${tag} Reply failed for ${message_id}: ${err.message}`);
           pending.markFailed(message_id, `reply failed: ${err.message}`);
           return false;
         }
       } else {
         pending.markReplied(message_id);
-        process.stderr.write(`[email-bridge][DRY_RUN] Would reply: ${response.slice(0, 120)}\n`);
+        log(tid, `${tag} [DRY_RUN] Would reply: ${response.slice(0, 120)}`);
       }
       return true;
     } finally {
@@ -302,39 +319,50 @@ function createEmailBridge(options = {}) {
   const poller = mail.poll(pollIntervalMs, async (msg, client) => {
     const { message_id, subject, from } = msg;
     const senderEmail = from?.email || '';
+    const tid = traceId();
 
-    // Skip emails we sent ourselves (prevents reply loops)
-    if (filterSelfSent && isSelfSent(msg, ownAddresses)) {
-      process.stderr.write(
-        `[email-bridge] Skipping self-sent: "${subject}" (${message_id})\n`,
-      );
-      return;
-    }
-
-    // Admin path: read message, check for commands, bypass normal ACL + dispatch
-    if (acl.isAdmin(senderEmail)) {
-      process.stderr.write(`[email-bridge] Admin message from ${senderEmail}: "${subject}"\n`);
-      let fullMsg;
-      try { fullMsg = client.read(message_id); } catch { fullMsg = null; }
-      const body = fullMsg ? _plainBody(fullMsg) : '';
-      if (admin.hasCommands(body)) {
-        await admin.executeCommands(message_id, body, senderEmail);
+    try {
+      // Skip emails we sent ourselves (prevents reply loops)
+      if (filterSelfSent && isSelfSent(msg, ownAddresses)) {
+        log(tid, `Skipping self-sent: "${subject}" (${message_id})`);
         return;
       }
-      // Admin with no commands → fall through to normal dispatch
+
+      // Admin path: read message, check for commands, bypass normal ACL + dispatch
+      if (acl.isAdmin(senderEmail)) {
+        log(tid, `Admin message from ${senderEmail}: "${subject}"`);
+        let fullMsg;
+        try {
+          fullMsg = client.read(message_id);
+        } catch (err) {
+          // 读取失败不能静默：admin 发的指令邮件如果偶发失败收不到反馈
+          log(tid, `Admin message read failed: ${err.message} — will retry on next sweep`);
+          pending.add(msg);
+          pending.markFailed(message_id, `admin read failed: ${err.message}`);
+          return;
+        }
+        const body = fullMsg ? _plainBody(fullMsg) : '';
+        if (admin.hasCommands(body)) {
+          await admin.executeCommands(message_id, body, senderEmail);
+          return;
+        }
+        // Admin with no commands → fall through to normal dispatch
+      }
+
+      // Global ACL check (non-admin senders)
+      if (!acl.isAdmin(senderEmail) && acl.checkGlobal(senderEmail) === 'deny') {
+        await handleDenied(client, msg, 'global ACL');
+        return;
+      }
+
+      // Register in pending store BEFORE reading (read() marks as read on server side)
+      pending.add(msg);
+
+      await dispatchAndReply(message_id, subject, senderEmail, client, false);
+    } catch (err) {
+      // 兜底：handler 内部错误不能让整个 poll tick 失败累积
+      log(tid, `Unhandled error in poll handler for ${message_id}: ${err.message}`);
     }
-
-    // Global ACL check (non-admin senders)
-    if (!acl.isAdmin(senderEmail) && acl.checkGlobal(senderEmail) === 'deny') {
-      await handleDenied(client, msg, 'global ACL');
-      return;
-    }
-
-    // Register in pending store BEFORE reading (read() marks as read on server side)
-    pending.add(msg);
-
-    await dispatchAndReply(message_id, subject, senderEmail, client, false);
-
   }, { limit, afterTimestamp: savedCursor || undefined, saveCursor });
 
   // Retry sweep: runs on every poll interval even when inbox is empty.
@@ -342,17 +370,27 @@ function createEmailBridge(options = {}) {
   // main poll, spreading API calls evenly and reducing burst rate.
   let retryTimer = null;
   const runRetrySweep = async () => {
-    const retryQueue = pending.getPending();
-    if (retryQueue.length === 0) {
+    try {
+      const retryQueue = pending.getPending();
+      if (retryQueue.length === 0) {
+        pending.cleanup();
+        return;
+      }
+      log('', `Retry sweep: ${retryQueue.length} pending message(s)`);
+      const client = mail;
+      for (const entry of retryQueue) {
+        try {
+          await dispatchAndReply(entry.message_id, entry.subject, entry.from_email, client, true);
+        } catch (err) {
+          // 单条失败不阻塞 sweep
+          log('', `Retry sweep dispatch threw for ${entry.message_id}: ${err.message}`);
+        }
+      }
       pending.cleanup();
-      return;
+    } catch (err) {
+      // sweep 整体失败不能让 setInterval 死掉
+      log('', `Retry sweep failed (will retry next tick): ${err.message}`);
     }
-    process.stderr.write(`[email-bridge] Retry sweep: ${retryQueue.length} pending message(s)\n`);
-    const client = mail;
-    for (const entry of retryQueue) {
-      await dispatchAndReply(entry.message_id, entry.subject, entry.from_email, client, true);
-    }
-    pending.cleanup();
   };
   // Start retry sweep after half-interval offset to avoid simultaneous poll+retry bursts
   setTimeout(() => {

@@ -61,15 +61,21 @@ class PendingStore {
       } else {
         this._data = {};
       }
-    } catch {
+    } catch (err) {
+      // pending store 损坏会导致 retry sweep 失忆（已读未回的邮件永久丢失）
+      process.stderr.write(`[pending-store] Failed to load ${this.storeFile}: ${err.message}\n`);
       this._data = {};
     }
   }
 
   _save() {
+    // 原子写：tmp + rename，避免 retry sweep + poll handler 并发写入互相覆盖
+    const dir = path.dirname(this.storeFile);
     try {
-      fs.mkdirSync(path.dirname(this.storeFile), { recursive: true });
-      fs.writeFileSync(this.storeFile, JSON.stringify(this._data, null, 2), 'utf8');
+      fs.mkdirSync(dir, { recursive: true });
+      const tmp = path.join(dir, `.pending.${process.pid}.${Date.now()}.tmp`);
+      fs.writeFileSync(tmp, JSON.stringify(this._data, null, 2), 'utf8');
+      fs.renameSync(tmp, this.storeFile);
     } catch (err) {
       process.stderr.write(`[pending-store] Failed to save: ${err.message}\n`);
     }

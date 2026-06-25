@@ -20,83 +20,60 @@
  */
 
 const { createProfile } = require('../src/index');
-const { spawn } = require('child_process');
+const { spawnWithTimeout, withResumeFallback } = require('../src/spawn');
+const { PROFILE_TIMEOUT_MS } = require('../src/constants');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-
-const TIMEOUT_MS = 300_000;
 
 /**
  * @param {string} message
  * @param {string} sessionId  conversation UUID or empty
  * @returns {Promise<{ response: string, sessionId: string }>}
  */
-function runAgy(message, sessionId) {
-  return new Promise((resolve, reject) => {
-    const logPath = path.join(os.tmpdir(), `agy-${process.pid}-${Date.now()}.log`);
-    const model = process.env.AGY_MODEL || '';
+async function runAgy(message, sessionId) {
+  const logPath = path.join(os.tmpdir(), `agy-${process.pid}-${Date.now()}.log`);
+  const model = process.env.AGY_MODEL || '';
 
-    const args = ['--dangerously-skip-permissions', '--log-file', logPath];
-    if (model) args.push('--model', model);
-    if (sessionId) args.push('--conversation', sessionId);
-    args.push('-p', message);
+  const args = ['--dangerously-skip-permissions', '--log-file', logPath];
+  if (model) args.push('--model', model);
+  if (sessionId) args.push('--conversation', sessionId);
+  args.push('-p', message);
 
-    const child = spawn('agy', args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    child.stdin.end(); // agy blocks if stdin is a tty; close immediately
-
-    const stdoutChunks = [];
-    const stderrChunks = [];
-    child.stdout.on('data', (d) => stdoutChunks.push(d));
-    child.stderr.on('data', (d) => stderrChunks.push(d));
-
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      reject(new Error(`agy timed out after ${TIMEOUT_MS / 1000}s`));
-    }, TIMEOUT_MS);
-
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (timedOut) return;
-
-      if (code !== 0) {
-        const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
-        return reject(new Error(`agy exited with code ${code}${stderr ? `\n${stderr}` : ''}`));
-      }
-
-      const response = Buffer.concat(stdoutChunks).toString('utf8').trim();
-
-      // Extract conversation ID from log file
-      let newSessionId = sessionId || '';
-      try {
-        const log = fs.readFileSync(logPath, 'utf8');
-        const m = log.match(/Created conversation ([a-f0-9-]{36})/i);
-        if (m) newSessionId = m[1];
-      } catch { /* log may not exist if agy skipped it */ }
-      // Clean up temp log
-      try { fs.unlinkSync(logPath); } catch { /* ignore */ }
-
-      resolve({ response, sessionId: newSessionId });
-    });
-
-    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+  const result = await spawnWithTimeout('agy', args, {
+    timeoutMs: PROFILE_TIMEOUT_MS,
   });
+
+  if (result.timedOut) {
+    try { fs.unlinkSync(logPath); } catch { /* ignore */ }
+    throw new Error(`agy timed out after ${PROFILE_TIMEOUT_MS / 1000}s`);
+  }
+
+  if (result.code !== 0) {
+    const stderrTail = (result.stderr || '').trim().slice(-512);
+    try { fs.unlinkSync(logPath); } catch { /* ignore */ }
+    const reason = result.signal
+      ? `killed by signal ${result.signal}`
+      : `exited with code ${result.code}`;
+    throw new Error(`agy ${reason}` + (stderrTail ? `\n${stderrTail}` : ''));
+  }
+
+  const response = (result.stdout || '').trim();
+
+  // Extract conversation ID from log file
+  let newSessionId = sessionId || '';
+  try {
+    const log = fs.readFileSync(logPath, 'utf8');
+    const m = log.match(/Created conversation ([a-f0-9-]{36})/i);
+    if (m) newSessionId = m[1];
+  } catch { /* log may not exist if agy skipped it */ }
+  try { fs.unlinkSync(logPath); } catch { /* ignore */ }
+
+  return { response, sessionId: newSessionId };
 }
 
 createProfile(async ({ message, sessionId }) => {
-  let result;
-  try {
-    result = await runAgy(message, sessionId);
-  } catch (err) {
-    if (sessionId) {
-      process.stderr.write(`[agy] session ${sessionId} resume failed: ${err.message}\n`);
-      result = await runAgy(message, '');
-    } else {
-      throw err;
-    }
-  }
-
+  const invoke = (sid) => runAgy(message, sid);
+  const result = await withResumeFallback(invoke, sessionId, 'agy');
   return { response: result.response, sessionId: result.sessionId || undefined };
 });

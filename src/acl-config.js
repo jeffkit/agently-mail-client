@@ -24,6 +24,54 @@ const os   = require('os');
 const DEFAULT_STORE_DIR    = path.join(os.homedir(), '.agently-mail-client');
 const DEFAULT_DYNAMIC_FILE = path.join(DEFAULT_STORE_DIR, 'acl-dynamic.json');
 
+// 公共邮件域 denylist：把整个公共域配为 admin 会让任何人都能执行
+// /allow /deny /reset /status —— 启动时必须拒绝。
+const PUBLIC_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
+  'yahoo.com', 'icloud.com', 'me.com', 'mac.com',
+  'qq.com', 'foxmail.com', 'vip.qq.com',
+  '163.com', '126.com', 'yeah.net', 'sina.com', 'sohu.com',
+  'aliyun.com',
+]);
+
+/**
+ * 校验 admin_senders 配置合理性，启动时调用一次。
+ * 返回警告字符串列表（空列表 = 配置 OK）。
+ *
+ * 检查规则：
+ *   - 整个公共邮件域（@gmail.com）不应配为 admin —— 任何人都能下达指令
+ *   - 单个公共域邮箱（admin@gmail.com）允许，但给出温和提示（运营者自己承担风险）
+ *
+ * @param {string[]} adminSenders
+ * @returns {string[]}
+ */
+function validateAdminSenders(adminSenders) {
+  const warnings = [];
+  for (const raw of adminSenders || []) {
+    const rule = String(raw).trim().toLowerCase();
+    if (!rule) continue;
+    if (rule.startsWith('@')) {
+      const domain = rule.slice(1).replace(/^\*\./, '');
+      if (PUBLIC_EMAIL_DOMAINS.has(domain)) {
+        warnings.push(
+          `admin_senders 包含公共邮件域 "${rule}" —— 这会让任意人能执行 admin 指令，请删除该项`,
+        );
+      }
+    } else {
+      const atIdx = rule.indexOf('@');
+      if (atIdx !== -1) {
+        const domain = rule.slice(atIdx + 1);
+        if (PUBLIC_EMAIL_DOMAINS.has(domain)) {
+          warnings.push(
+            `admin_senders 含公共域邮箱 "${rule}" —— 确认这是受控账号，否则建议改用企业域`,
+          );
+        }
+      }
+    }
+  }
+  return warnings;
+}
+
 // ---------------------------------------------------------------------------
 // YAML loader (mirrors dispatcher.js approach — js-yaml with simple fallback)
 // ---------------------------------------------------------------------------
@@ -89,6 +137,11 @@ class AclConfig {
     this._static      = this._loadStatic(opts.aclConfigFile);
     this._dynamic     = this._loadDynamic();
     this._merged      = this._merge();
+
+    // 启动时校验 admin_senders 配置合理性（仅警告，不阻塞启动）
+    for (const w of validateAdminSenders(this.adminSenders)) {
+      process.stderr.write(`[acl-config] ⚠ ${w}\n`);
+    }
   }
 
   // ── public getters ────────────────────────────────────────────────────────
@@ -183,18 +236,25 @@ class AclConfig {
           denied:  Array.isArray(raw.denied)  ? raw.denied  : [],
         };
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      // 动态 ACL 损坏不能静默：相当于丢失运营指令历史
+      process.stderr.write(`[acl-config] Cannot load dynamic ACL (${this._dynamicFile}): ${err.message}\n`);
+    }
     return { allowed: [], denied: [] };
   }
 
   _saveDynamic(data) {
+    // 原子写：先写临时文件再 rename，避免并发 admin 指令互相覆盖造成最后写入获胜
+    const dir = path.dirname(this._dynamicFile);
     try {
-      fs.mkdirSync(path.dirname(this._dynamicFile), { recursive: true });
+      fs.mkdirSync(dir, { recursive: true });
+      const tmp = path.join(dir, `.acl-dynamic.${process.pid}.${Date.now()}.tmp`);
       fs.writeFileSync(
-        this._dynamicFile,
+        tmp,
         JSON.stringify({ allowed: data.allowed, denied: data.denied }, null, 2),
         'utf8',
       );
+      fs.renameSync(tmp, this._dynamicFile);
     } catch (err) {
       process.stderr.write(`[acl-config] Cannot save dynamic ACL: ${err.message}\n`);
     }

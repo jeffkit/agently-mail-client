@@ -21,6 +21,32 @@
  */
 
 const { spawnSync } = require('child_process');
+const { POLL_SEEN_CACHE_SIZE, CLI_MAX_BUFFER } = require('./constants');
+
+// ---------------------------------------------------------------------------
+// Simple bounded LRU set — caps the seen-ids cache so a long-running process
+// doesn't accumulate every message_id it has ever seen.
+// ---------------------------------------------------------------------------
+
+class BoundedSet {
+  constructor(max = POLL_SEEN_CACHE_SIZE) {
+    this._max = max;
+    this._map = new Map(); // insertion-ordered: oldest at index 0
+  }
+  has(key) { return this._map.has(key); }
+  add(key) {
+    if (this._map.has(key)) {
+      // refresh insertion order
+      this._map.delete(key);
+    } else if (this._map.size >= this._max) {
+      // evict oldest
+      const oldest = this._map.keys().next().value;
+      this._map.delete(oldest);
+    }
+    this._map.set(key, true);
+  }
+  get size() { return this._map.size; }
+}
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -54,7 +80,7 @@ class AgentlyMailError extends Error {
 function runCli(args) {
   const result = spawnSync('agently-cli', args, {
     encoding: 'utf8',
-    maxBuffer: 10 * 1024 * 1024,
+    maxBuffer: CLI_MAX_BUFFER,
   });
 
   if (result.error) {
@@ -357,7 +383,7 @@ class AgentlyMailClient {
     // Start from now if no saved cursor: don't reprocess the entire inbox on first run
     let afterTimestamp = options.afterTimestamp || new Date().toISOString();
     const saveCursor = options.saveCursor || null;
-    const seenIds = new Set();
+    const seenIds = new BoundedSet();
     let stopped = false;
     let timer = null;
 

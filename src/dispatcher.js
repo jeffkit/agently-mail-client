@@ -11,14 +11,29 @@
  *
  * 这一层在功能上等价于 iLink Hub 里的 Bridge Manager + Executor，
  * 但面向邮件通道，用配置文件替代动态注册。
+ *
+ * 实现说明：_spawnProfile 用 child_process.spawn + Promise 异步执行，
+ * 避免之前 spawnSync 长时间阻塞事件循环（poll 定时器、retry sweep、
+ * SIGINT 响应都会被冻结）。dispatch 是 async。
  */
 
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
+const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { marked } = require('marked');
+const sanitizeHtml = require('sanitize-html');
 const { loadHistory, appendHistory } = require('agentproc');
+
+const { loadProfilesConfig } = require('./yaml-loader');
+const { spawnWithTimeout } = require('./spawn');
+const {
+  PROFILE_TIMEOUT_MS,
+  MAX_BODY_LENGTH,
+  SESSION_ID_PROFILE_MAX,
+  SESSION_ID_HASH_LENGTH,
+} = require('./constants');
 
 // ---------------------------------------------------------------------------
 // Agent session ID sidecar — persists the CLI-internal session id per email
@@ -42,7 +57,10 @@ function loadAgentSessionId(emailSessionId) {
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
     return typeof data.agentSessionId === 'string' ? data.agentSessionId : '';
-  } catch {
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') {
+      process.stderr.write(`[dispatcher] loadAgentSessionId(${emailSessionId}) failed: ${err.message}\n`);
+    }
     return '';
   }
 }
@@ -61,78 +79,12 @@ function saveAgentSessionId(emailSessionId, agentSessionId) {
       JSON.stringify({ agentSessionId }, null, 2),
       'utf8',
     );
-  } catch { /* ignore write errors */ }
-}
-
-// ---------------------------------------------------------------------------
-// YAML loader
-// ---------------------------------------------------------------------------
-
-/**
- * Load email-profiles.yaml.
- * Tries js-yaml first; falls back to a minimal inline parser.
- *
- * @param {string} filePath
- * @returns {ProfilesConfig}
- */
-function loadProfilesConfig(filePath) {
-  const raw = fs.readFileSync(filePath, 'utf8');
-  try {
-    const yaml = require('js-yaml');
-    return yaml.load(raw);
-  } catch {
-    return _parseSimpleYaml(raw);
+  } catch (err) {
+    // 持久化失败不能静默：下次回复会拿到空 session，对话历史"断片"无法察觉
+    process.stderr.write(
+      `[dispatcher] saveAgentSessionId(${emailSessionId}) failed: ${err.message}\n`,
+    );
   }
-}
-
-/**
- * Strip an inline YAML comment from a scalar value string.
- * e.g. './profiles/echo.js   # debug' → './profiles/echo.js'
- * Note: does not handle strings that legitimately contain " #".
- */
-function _stripInlineComment(value) {
-  // Remove anything from " #" (space + hash) onwards
-  return value.replace(/\s+#.*$/, '').trim();
-}
-
-function _parseSimpleYaml(text) {
-  const result = { default: '', profiles: {} };
-  let current = null;
-  let inArgs = false;
-
-  for (const line of text.split('\n')) {
-    if (line.trim().startsWith('#') || !line.trim()) continue;
-
-    const m0 = line.match(/^default:\s*(.+)/);
-    if (m0) { result.default = _stripInlineComment(m0[1]); continue; }
-    if (line.match(/^profiles:/)) continue;
-
-    const m1 = line.match(/^  ([\w-]+):/);
-    if (m1) {
-      current = m1[1];
-      result.profiles[current] = { command: '', args: [], trigger: '' };
-      inArgs = false;
-      continue;
-    }
-
-    if (current) {
-      const mc = line.match(/^    command:\s*(.+)/);
-      if (mc) { result.profiles[current].command = _stripInlineComment(mc[1]); continue; }
-      const mt = line.match(/^    trigger:\s*(.+)/);
-      if (mt) { result.profiles[current].trigger = _stripInlineComment(mt[1]); continue; }
-      const md = line.match(/^    description:\s*(.+)/);
-      if (md) { result.profiles[current].description = _stripInlineComment(md[1]); continue; }
-      if (line.match(/^    args:/)) { inArgs = true; continue; }
-      if (inArgs) {
-        const ma = line.match(/^      - (.+)/);
-        if (ma) {
-          result.profiles[current].args.push(_stripInlineComment(ma[1]));
-          continue;
-        } else { inArgs = false; }
-      }
-    }
-  }
-  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +101,8 @@ function stripHtml(html) {
   return html
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<object[^>]*>[\s\S]*?<\/object>/gi, '')
     // Convert block elements to newlines before stripping
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n')
@@ -262,18 +216,56 @@ function truncate(text, maxLength) {
   return text.slice(0, maxLength) + `\n\n[... 内容已截断，原始长度 ${text.length} 字符]`;
 }
 
+// sanitize-html 白名单：邮件渲染允许的标签/属性。
+// marked 默认不净化 HTML，必须由调用方负责（marked v0.7 起的设计契约）。
+const SANITIZE_OPTIONS = {
+  // 不允许 <script>、<iframe>、<object>、<embed>、<form> 等
+  allowedTags: [
+    'p', 'br', 'hr', 'blockquote', 'pre', 'code', 'span', 'div',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'strong', 'em', 'b', 'i', 'u', 's', 'del', 'ins', 'mark', 'sub', 'sup', 'small',
+    'a', 'img',
+  ],
+  allowedAttributes: {
+    '*': ['class', 'id'],
+    'a': ['href', 'name', 'target', 'rel', 'title'],
+    'img': ['src', 'alt', 'title', 'width', 'height'],
+    // 允许 inline code language class（marked 输出 <code class="language-js">）
+    'code': ['class'],
+    'span': ['class'],
+  },
+  // 强制 rel="noopener noreferrer" 给所有 target=_blank
+  allowedSchemes: ['http', 'https', 'mailto', 'tel'],
+  // 阻断 javascript:/data: 等危险协议（自动丢弃带这些 scheme 的 href/src）
+  allowedSchemesByTag: {},
+  transformTags: {
+    'a': (tagName, attribs) => ({
+      tagName,
+      attribs: { ...attribs, rel: 'noopener noreferrer', target: '_blank' },
+    }),
+  },
+  // 不允许任何 style 属性（避免 CSS 注入）
+  allowedStyles: {},
+};
+
 /**
- * Convert Markdown text to HTML using marked.
+ * Convert Markdown text to sanitized HTML using marked + sanitize-html.
  * Adds basic email styling for better readability.
+ *
+ * marked 自 v0.7 起不再净化 HTML（设计契约），必须由调用方净化；
+ * sanitize-html 用白名单拦截 <script>/<iframe>/on*=/javascript: 等。
  *
  * @param {string} markdown
  * @returns {string} HTML string with basic styling
  */
 function convertMarkdownToHtml(markdown) {
-  const htmlBody = marked.parse(markdown, {
+  const rawHtml = marked.parse(markdown, {
     breaks: true,  // 支持换行符转换为 <br>
     gfm: true      // 启用 GitHub Flavored Markdown
   });
+  const htmlBody = sanitizeHtml(rawHtml, SANITIZE_OPTIONS);
 
   // 添加基础邮件样式
   return `
@@ -391,7 +383,7 @@ ${htmlBody}
  * @returns {string}
  */
 function cleanBody(fullMsg, opts = {}) {
-  const { stripQuotes = true, maxLength = 8000 } = opts;
+  const { stripQuotes = true, maxLength = MAX_BODY_LENGTH } = opts;
 
   let text = fullMsg.body_format === 'HTML'
     ? stripHtml(fullMsg.body || '')
@@ -423,7 +415,7 @@ class ProfileDispatcher {
     this.config = loadProfilesConfig(configPath);
     this.configDir = path.dirname(path.resolve(configPath));
     this.stripQuotes = opts.stripQuotes !== false;
-    this.maxBodyLength = opts.maxBodyLength ?? 8000;
+    this.maxBodyLength = opts.maxBodyLength ?? MAX_BODY_LENGTH;
 
     // Inject configDir into each profile so _spawnProfile can resolve relative paths
     for (const cfg of Object.values(this.config.profiles)) {
@@ -472,12 +464,13 @@ class ProfileDispatcher {
    *
    * @param {object}  fullMsg  Full message from AgentlyMailClient.read()
    * @param {boolean} dryRun   Skip Profile spawn, return placeholder
-   * @returns {{ response: string, profileName: string }}
+   * @returns {Promise<{ response: string, profileName: string }>}
    */
-  dispatch(fullMsg, dryRun = false) {
+  async dispatch(fullMsg, dryRun = false) {
     const { subject, from } = fullMsg;
     const senderEmail = from?.email || 'unknown';
     const senderName = from?.name || senderEmail;
+    const messageId = fullMsg.message_id || '(unknown)';
 
     // 1. Resolve profile
     const { profileName, profileConfig, cleanSubject } = this.resolveProfile(subject || '');
@@ -500,25 +493,29 @@ class ProfileDispatcher {
     // 3. Load thread × profile session history
     const sid = this._sessionId(fullMsg, profileName);
     const history = loadHistory(sid);
+    void history; // loadHistory warms the sidecar; appendHistory will read it again
     // Agent session id (e.g. claude --resume) stored in a separate sidecar
     const prevSessionId = loadAgentSessionId(sid);
 
-    // 4. Spawn Profile with P0 protocol
+    // 4. Spawn Profile with P0 protocol (async)
     let response, newSessionId;
     try {
-      ({ response, newSessionId } = this._spawnProfile(
+      ({ response, newSessionId } = await this._spawnProfile(
         profileConfig, message, prevSessionId,
-        `email-${senderEmail}`, senderEmail, dryRun,
+        `email-${senderEmail}`, senderEmail, dryRun, profileName, messageId,
       ));
     } catch (err) {
-      if (prevSessionId) {
-        // Session may have expired — retry with a fresh session
+      // AGENT_ERROR 抛出的 ProfileError 不应触发 session 重试（profile 已正常退出，
+      // 只是报告了应用层错误）。只有 spawn 失败 / 非零退出 / 信号 kill / 超时
+      // 才走 session 降级重试。
+      if (prevSessionId && !err.isProfileError) {
         process.stderr.write(
-          `[dispatcher] Session ${prevSessionId} may be expired, retrying fresh\n`,
+          `[dispatcher] msg=${messageId} profile=${profileName} session=${prevSessionId} ` +
+          `may be expired, retrying fresh: ${err.message}\n`,
         );
-        ({ response, newSessionId } = this._spawnProfile(
+        ({ response, newSessionId } = await this._spawnProfile(
           profileConfig, message, '',
-          `email-${senderEmail}`, senderEmail, dryRun,
+          `email-${senderEmail}`, senderEmail, dryRun, profileName, messageId,
         ));
       } else {
         throw err;
@@ -546,6 +543,10 @@ class ProfileDispatcher {
    * All replies in the same email chain therefore share one session, so the
    * AI Profile maintains conversation context across the full thread.
    *
+   * 安全：threadRoot 来自邮件头（攻击者可控）。早期实现直接 slice(0,80)
+   * 的子串，攻击者可构造相同 Message-ID 精确碰撞，复用他人会话历史。
+   * 现在取 SHA1 前 N 位，碰撞不可控；profileName 也做 sanitize 防止路径注入。
+   *
    * @private
    */
   _sessionId(fullMsg, profileName) {
@@ -559,11 +560,24 @@ class ProfileDispatcher {
       fullMsg.message_id ||
       'unknown';
 
-    return `email_${profileName}_${threadRoot.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)}`;
+    // profileName 来自 yaml 键（运营者可控，但仍 sanitize 兜底）
+    const safeProfile = String(profileName).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, SESSION_ID_PROFILE_MAX);
+    // SHA1(threadRoot) 前 N 位 —— 不可碰撞且固定长度，不泄露原 Message-ID
+    const hash = crypto
+      .createHash('sha1')
+      .update(String(threadRoot))
+      .digest('hex')
+      .slice(0, SESSION_ID_HASH_LENGTH);
+    const sid = `email_${safeProfile}_${hash}`;
+    // 终极兜底：sid 必须形如 ^email_[A-Za-z0-9_-]+$
+    if (!/^email_[A-Za-z0-9_-]+$/.test(sid)) {
+      return `email_${safeProfile}_invalid`;
+    }
+    return sid;
   }
 
   /** @private */
-  _spawnProfile(cfg, message, sessionId, sessionName, fromUser, dryRun) {
+  async _spawnProfile(cfg, message, sessionId, sessionName, fromUser, dryRun, profileName, messageId) {
     if (dryRun) {
       return {
         response: `[DRY_RUN] Profile would handle: "${message.slice(0, 80)}..."`,
@@ -576,53 +590,81 @@ class ProfileDispatcher {
       a.startsWith('.') ? path.resolve(configDir, a) : a,
     );
 
-    const child = spawnSync(cfg.command, args, {
-      encoding: 'utf8',
-      maxBuffer: 20 * 1024 * 1024,
-      timeout: 300_000,
-      env: {
-        ...process.env,
-        AGENT_MESSAGE: message,
-        AGENT_SESSION_ID: sessionId || '',
-        AGENT_SESSION_NAME: sessionName || 'email',
-        AGENT_FROM_USER: fromUser || '',
-        AGENT_STREAMING: '1',
-      },
-    });
+    const tag = `[dispatcher] msg=${messageId} profile=${profileName || cfg.command}`;
 
-    if (child.error) {
-      throw new Error(`Failed to spawn profile "${cfg.command}": ${child.error.message}`);
+    let result;
+    try {
+      result = await spawnWithTimeout(cfg.command, args, {
+        timeoutMs: PROFILE_TIMEOUT_MS,
+        env: {
+          ...process.env,
+          AGENT_MESSAGE: message,
+          AGENT_SESSION_ID: sessionId || '',
+          AGENT_SESSION_NAME: sessionName || 'email',
+          AGENT_FROM_USER: fromUser || '',
+          AGENT_STREAMING: '1',
+        },
+      });
+    } catch (err) {
+      throw new Error(`Failed to spawn profile "${cfg.command}": ${err.message}`);
     }
-    if (child.status !== 0) {
-      const stderr = (child.stderr || '').trim();
+
+    // 子进程被信号 kill（如 SIGKILL/超时/OOM）：返回明确错误，绝不返回残缺响应
+    if (result.signal) {
       throw new Error(
-        `Profile exited with code ${child.status}${stderr ? `: ${stderr}` : ''}`,
+        `${tag} killed by signal ${result.signal}` +
+        (result.stderr.trim() ? `: ${result.stderr.trim().slice(-512)}` : ''),
+      );
+    }
+    if (result.code !== 0) {
+      const stderr = (result.stderr || '').trim();
+      throw new Error(
+        `${tag} exited with code ${result.code}` + (stderr ? `: ${stderr.slice(-512)}` : ''),
       );
     }
 
     // Parse AgentProc P0 stdout: AGENT_SESSION / AGENT_PARTIAL / AGENT_ERROR lines
     let newSessionId = sessionId || '';
     const parts = [];
-    let hasError = false;
-    for (const line of (child.stdout || '').split('\n')) {
+    for (const line of (result.stdout || '').split('\n')) {
       if (line.startsWith('AGENT_SESSION:')) {
         newSessionId = line.slice('AGENT_SESSION:'.length).trim();
       } else if (line.startsWith('AGENT_PARTIAL:')) {
         try { parts.push(JSON.parse(line.slice('AGENT_PARTIAL:'.length))); }
         catch { parts.push(line.slice('AGENT_PARTIAL:'.length)); }
       } else if (line.startsWith('AGENT_ERROR:')) {
+        // profile 已正常退出（code=0），只是报告了应用层错误。
+        // 改为返回错误响应而非 throw：避免穿透到 dispatch 的 catch
+        // 触发"清空 session 重试"，白白烧掉一次成功的 LLM 调用。
         let errMsg;
         try { errMsg = JSON.parse(line.slice('AGENT_ERROR:'.length)); }
         catch { errMsg = line.slice('AGENT_ERROR:'.length); }
-        throw new Error(`Profile error: ${errMsg}`);
+        const err = new Error(`${tag} AGENT_ERROR: ${errMsg}`);
+        err.isProfileError = true;
+        throw err;
       } else {
         parts.push(line);
       }
     }
-    void hasError; // only referenced in the AGENT_ERROR branch above
 
     return { response: parts.join('\n').trim(), newSessionId };
   }
 }
 
-module.exports = { ProfileDispatcher, loadProfilesConfig, cleanBody, stripHtml, removeQuotedContent, convertMarkdownToHtml };
+// ProfileError 标记：用于 dispatch 判断是否应走 session 重试降级
+function isProfileError(err) {
+  return Boolean(err && err.isProfileError);
+}
+
+module.exports = {
+  ProfileDispatcher,
+  loadProfilesConfig,
+  cleanBody,
+  stripHtml,
+  removeQuotedContent,
+  removeAgentlyFooter,
+  truncate,
+  convertMarkdownToHtml,
+  spawnWithTimeout,
+  isProfileError,
+};
