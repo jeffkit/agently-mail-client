@@ -163,11 +163,21 @@ function createEmailBridge(options = {}) {
       (aclConfigFile ? `[email-bridge] ACL config: ${aclConfigFile}\n` : '[email-bridge] ACL config: (none — open access)\n'),
     );
   } catch (err) {
-    process.stderr.write(
-      `[email-bridge] Auth check failed: ${err.message}\n` +
-      `  Run: agently-cli auth login\n`,
-    );
-    process.exit(3);
+    // Rate-limit (429) is transient — warn and continue without self-filter.
+    // Any other error (auth invalid, binary missing) is fatal.
+    const isRateLimit = /429|rate.?limit/i.test(err.message);
+    if (isRateLimit) {
+      process.stderr.write(
+        `[email-bridge] ⚠ +me rate-limited at startup; self-sent filter disabled until next poll.\n` +
+        `[email-bridge]   Profile routing: default=${dispatcher.config.default}\n`,
+      );
+    } else {
+      process.stderr.write(
+        `[email-bridge] Auth check failed: ${err.message}\n` +
+        `  Run: agently-cli auth login\n`,
+      );
+      process.exit(3);
+    }
   }
 
   /**
