@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+
+# Personal config (copy from *.example.yaml)
+email-profiles.yaml
+email-acl.yaml

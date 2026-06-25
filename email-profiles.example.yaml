@@ -1,0 +1,97 @@
+# email-profiles.yaml 示例配置
+#
+# 使用邮件主题前缀 [profile-name] 指定处理 Profile：
+#   Subject: [cursor] 帮我看这段代码
+#
+# 内置 Profile 路径相对于本配置文件所在目录（无需 npm install）
+
+# ── 发件人访问控制（可选） ──────────────────────────────────────────────────────
+#
+# allowed_senders: 全局白名单，只处理来自这些地址/域名的邮件
+#   不配置或留空 = 不限制（接受所有来信）
+#   支持：精确地址 "user@example.com"
+#         域名    "@example.com"（该域所有邮箱）
+#         子域通配 "@*.example.com"（所有子域名）
+#
+# allowed_senders:
+#   - me@gmail.com
+#   - "@mycompany.com"
+#   - "@*.trusted-partner.org"
+
+# denied_senders: 全局黑名单，优先级高于白名单
+#
+# denied_senders:
+#   - spam@example.com
+#   - "@blocked-domain.com"
+
+# deny_action: 被拒绝时的行为
+#   silent  — 静默丢弃，不回复（默认，避免泄露 Agent 存在）
+#   notify  — 发送一封礼貌的拒绝通知邮件
+#
+# deny_action: silent
+
+# deny_message: 自定义拒绝通知邮件正文（仅 deny_action: notify 时生效）
+#
+# deny_message: "感谢来信，您无权使用此服务，请联系管理员。"
+
+# ───────────────────────────────────────────────────────────────────────────────
+
+default: claude-code
+
+profiles:
+  # ──────────────────────────────────────
+  # 内置 Coding Agent CLI Profiles
+  # ──────────────────────────────────────
+
+  claude-code:
+    command: node
+    args:
+      - ./profiles/claude-code.js   # Claude Code CLI (claude)
+    description: Claude Code AI 助手（默认）
+    trigger: claude
+    # 可选 env: CLAUDE_MODEL=claude-opus-4-5
+
+  cursor:
+    command: node
+    args:
+      - ./profiles/cursor.js        # Cursor Agent CLI (agent)
+    description: Cursor AI 编程助手
+    trigger: cursor
+    # 可选 env: CURSOR_MODEL=claude-opus-4-5
+
+  codebuddy:
+    command: node
+    args:
+      - ./profiles/codebuddy.js     # CodeBuddy Code CLI (codebuddy)
+    description: CodeBuddy Code AI（腾讯云内部）
+    trigger: codebuddy
+    # 可选 env: ILINK_CODEBUDDY_MODEL=claude-sonnet-4.6
+
+  codex:
+    command: node
+    args:
+      - ./profiles/codex.js         # OpenAI Codex CLI (codex)
+    description: OpenAI Codex
+    trigger: codex
+
+  agy:
+    command: node
+    args:
+      - ./profiles/agy.js           # Antigravity (Google DeepMind) CLI (agy)
+    description: Google DeepMind Agy
+    trigger: agy
+    # 可选 env: AGY_MODEL=gemini-2.0-flash
+
+  # ──────────────────────────────────────
+  # 调试 / 自定义 Profile
+  # ──────────────────────────────────────
+
+  echo:
+    command: node
+    args:
+      - ./profiles/echo.js          # 原样回显，调试路由用
+    description: Echo（调试）
+    trigger: echo
+    # per-profile 白名单示例：只有自己能用 echo（调试专用）
+    # allowed_senders:
+    #   - me@gmail.com

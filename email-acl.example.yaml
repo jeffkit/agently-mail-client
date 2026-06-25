@@ -1,0 +1,13 @@
+admin_senders:
+  - admin@example.com      # 管理员邮箱，可执行 /allow /deny /status 等指令
+
+allowed_senders:
+  - "@example.com"         # 放行整个域名
+  # - user@gmail.com       # 或放行单个邮箱
+
+deny_action: silent
+
+report:
+  enabled: true
+  interval_hours: 24
+  min_denied_count: 1

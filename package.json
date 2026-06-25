@@ -1,0 +1,41 @@
+{
+  "name": "agently-mail-client",
+  "version": "0.1.0",
+  "description": "Agently Mail Bridge — polls an Agently Mail inbox, routes emails by subject prefix to AgentProc-compliant profiles, and auto-replies",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "bin": {
+    "agently-mail": "bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "test": "node --test tests/"
+  },
+  "keywords": [
+    "agentproc",
+    "email",
+    "bridge",
+    "agently",
+    "qqmail",
+    "ai-agent",
+    "agent-gateway"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@tencent-qqmail/agently-cli": ">=1.0.0"
+  },
+  "license": "MIT",
+  "files": [
+    "src/",
+    "bin/",
+    "profiles/",
+    "email-profiles.example.yaml",
+    "email-acl.example.yaml"
+  ],
+  "dependencies": {
+    "agentproc": "^0.1.1",
+    "marked": "^18.0.5"
+  }
+}
