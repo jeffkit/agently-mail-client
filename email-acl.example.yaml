@@ -5,9 +5,33 @@ allowed_senders:
   - "@example.com"         # 放行整个域名
   # - user@gmail.com       # 或放行单个邮箱
 
+# instant_reply_senders: 即时回复名单
+#   在此列表中的发件人，每封邮件收到后立即由 AI 回复，不进批处理队列。
+#   语义独立于 allowed_senders（白名单控制"能不能进来"，这里控制"怎么处理"）。
+#   admin_senders 中的发件人始终即时处理，无需在此重复配置。
+#   支持精确地址、@domain、@*.domain 三种格式。
+#
+# instant_reply_senders:
+#   - "@mycompany.com"     # 公司域名：始终即时回复
+#   - me@gmail.com         # 自己的邮件：即时回复
+
 deny_action: silent
 
 report:
   enabled: true
   interval_hours: 24
   min_denied_count: 1
+
+# ── 批处理模式（可选）──────────────────────────────────────────────────────────
+#
+# 启用后，通过 ACL 但不在 instant_reply_senders 列表中的邮件不再逐封即时回复，
+# 而是积累一段时间，统一发摘要给 admin_senders 让主人决策如何处理。
+#
+# batch_mode:
+#   enabled: true
+#
+#   # 摘要邮件发送间隔（小时），默认 2 小时
+#   collect_interval_hours: 2
+#
+#   # 批处理摘要解读使用的 AI profile（默认使用 email-profiles.yaml 的 default）
+#   # ai_profile: claude-code

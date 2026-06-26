@@ -27,6 +27,9 @@ const { AclConfig } = require('./acl-config');
 const { SenderAcl } = require('./sender-acl');
 const { DeniedLog } = require('./denied-log');
 const { AdminHandler } = require('./admin-handler');
+const { BatchStore } = require('./batch-store');
+const { BatchHandler } = require('./batch-handler');
+const { matchesAny } = require('./sender-acl');
 
 // Re-export createProfile from agentproc (AgentProc P0 protocol)
 const { createProfile: _createProfile } = require('agentproc');
@@ -100,6 +103,7 @@ function createEmailBridge(options = {}) {
     limit = 20,
     filterSelfSent = true,
     pendingStoreFile,
+    batchStoreFile,
   } = options;
 
   // Cursor file lives alongside the pending store for persistence across restarts
@@ -147,6 +151,37 @@ function createEmailBridge(options = {}) {
       : undefined,
   );
   const admin      = new AdminHandler(aclCfg, deniedLog, mail, { dryRun });
+
+  // 批处理模式：从 aclCfg 静态配置读取 batch_mode 段
+  const batchCfg         = aclCfg._static?.batch_mode || {};
+  const batchEnabled     = batchCfg.enabled === true;
+  const batchIntervalMs  = (batchCfg.collect_interval_hours || 2) * 60 * 60 * 1000;
+  // 即时回复名单：顶层字段，与白名单语义独立
+  const batchTrustedSenders = aclCfg.instantReplySenders;
+
+  const batchStore = new BatchStore(
+    batchStoreFile ||
+    path.join(
+      pendingStoreFile
+        ? path.dirname(pendingStoreFile)
+        : path.join(os.homedir(), '.agently-mail-client'),
+      'batch-queue.json',
+    ),
+  );
+
+  // dispatchAndReply 在后面定义，BatchHandler 通过闭包引用
+  let _dispatchAndReplyRef = null;
+  const batchHandler = batchEnabled
+    ? new BatchHandler({
+        batchStore,
+        aclConfig:        aclCfg,
+        mailClient:       mail,
+        dispatcher,
+        dispatchAndReply: (...args) => _dispatchAndReplyRef?.(...args),
+        batchConfig:      batchCfg,
+        dryRun,
+      })
+    : null;
 
   const profileNames = dispatcher.profileNames();
   process.stderr.write(
@@ -311,6 +346,9 @@ function createEmailBridge(options = {}) {
     }
   }
 
+  // 将 dispatchAndReply 绑定给 BatchHandler 的闭包引用
+  _dispatchAndReplyRef = dispatchAndReply;
+
   const savedCursor = loadCursor();
   if (savedCursor) {
     process.stderr.write(`[email-bridge] Resuming from cursor: ${savedCursor}\n`);
@@ -335,13 +373,20 @@ function createEmailBridge(options = {}) {
         try {
           fullMsg = client.read(message_id);
         } catch (err) {
-          // 读取失败不能静默：admin 发的指令邮件如果偶发失败收不到反馈
           log(tid, `Admin message read failed: ${err.message} — will retry on next sweep`);
           pending.add(msg);
           pending.markFailed(message_id, `admin read failed: ${err.message}`);
           return;
         }
         const body = fullMsg ? _plainBody(fullMsg) : '';
+
+        // 批处理模式：admin 回复摘要邮件 → 交给 BatchHandler 解读执行
+        if (batchHandler && batchHandler.isBatchReply(subject)) {
+          log(tid, `Batch owner reply from ${senderEmail}: "${subject}"`);
+          await batchHandler.handleOwnerReply(message_id, fullMsg, senderEmail);
+          return;
+        }
+
         if (admin.hasCommands(body)) {
           await admin.executeCommands(message_id, body, senderEmail);
           return;
@@ -355,7 +400,30 @@ function createEmailBridge(options = {}) {
         return;
       }
 
-      // Register in pending store BEFORE reading (read() marks as read on server side)
+      // 批处理模式分流：
+      //   - admin 发件人始终走即时处理
+      //   - instant_reply_senders（信任域）走即时处理
+      //   - 其余进入批队列
+      if (batchHandler && !acl.isAdmin(senderEmail) &&
+          !matchesAny(senderEmail, batchTrustedSenders)) {
+        // 读取完整消息以提取正文摘要（read() 同时在服务端标记已读，所以先 add）
+        pending.add(msg);
+        let fullMsg;
+        try {
+          fullMsg = client.read(message_id);
+        } catch (err) {
+          log(tid, `Batch read failed for ${message_id}: ${err.message}`);
+          pending.markFailed(message_id, `read failed: ${err.message}`);
+          return;
+        }
+        batchHandler.enqueue(msg, fullMsg);
+        // 批队列里的邮件不走 dispatchAndReply，标记 pending 为"已处理"以防 retry sweep 重触发
+        pending.markReplied(message_id);
+        log(tid, `[BATCH] Queued (not dispatched): "${subject}" from ${senderEmail}`);
+        return;
+      }
+
+      // 即时处理路径（信任域 / admin / 非批处理模式）
       pending.add(msg);
 
       await dispatchAndReply(message_id, subject, senderEmail, client, false);
@@ -401,10 +469,20 @@ function createEmailBridge(options = {}) {
   // Start inspection report scheduler
   admin.startReportScheduler();
 
+  // Start batch summary scheduler (if enabled)
+  if (batchHandler) {
+    batchHandler.start(batchIntervalMs);
+    process.stderr.write(
+      `[email-bridge] Batch mode: ON (interval=${batchCfg.collect_interval_hours || 2}h, ` +
+      `trusted=${batchTrustedSenders.length > 0 ? batchTrustedSenders.join(', ') : 'none'})\n`,
+    );
+  }
+
   // Graceful shutdown
   const stop = () => {
     poller.stop();
     admin.stopReportScheduler();
+    if (batchHandler) batchHandler.stop();
     if (retryTimer) clearInterval(retryTimer);
   };
   process.on('SIGINT', () => {
@@ -432,6 +510,8 @@ module.exports = {
   SenderAcl,
   DeniedLog,
   AdminHandler,
+  BatchStore,
+  BatchHandler,
   createEmailBridge,
   createProfile,
   convertMarkdownToHtml,

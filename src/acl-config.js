@@ -146,13 +146,14 @@ class AclConfig {
 
   // ── public getters ────────────────────────────────────────────────────────
 
-  get allowedSenders()  { return this._merged.allowed; }
-  get deniedSenders()   { return this._merged.denied; }
-  get adminSenders()    { return this._static.admin_senders || []; }
-  get denyAction()      { return this._static.deny_action || 'silent'; }
-  get denyMessage()     { return this._static.deny_message || null; }
-  get profileAcl()      { return this._static.profile_acl || {}; }
-  get reportConfig()    { return this._static.report || {}; }
+  get allowedSenders()        { return this._merged.allowed; }
+  get deniedSenders()         { return this._merged.denied; }
+  get adminSenders()          { return this._static.admin_senders || []; }
+  get instantReplySenders()   { return this._static.instant_reply_senders || []; }
+  get denyAction()            { return this._static.deny_action || 'silent'; }
+  get denyMessage()           { return this._static.deny_message || null; }
+  get profileAcl()            { return this._static.profile_acl || {}; }
+  get reportConfig()          { return this._static.report || {}; }
 
   /** True when no ACL rules at all (open access mode). */
   isOpenAccess() {
