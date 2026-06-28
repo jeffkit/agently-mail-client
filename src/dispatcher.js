@@ -137,12 +137,13 @@ function removeAgentlyFooter(text) {
  *
  * Strips:
  *  1. Lines starting with ">" (standard email quoting)
- *  2. Common "On [date/time], [name] wrote:" dividers followed by quoted lines
+ *  2. Common "On [date/time], [name] wrote:" dividers followed by ">"-prefixed lines
  *  3. Common Chinese equivalents ("发件人:", "发送时间:" block headers in reply headers)
  *  4. Trailing signature separators ("-- " on its own line)
  *
- * Only the "new" text written by the sender is kept, reducing token usage
- * and avoiding confusion when passing reply threads to an AI profile.
+ * Unlike the previous implementation, text that appears AFTER a quoted block
+ * (inline replies, post-quote comments) is preserved.  A new non-quoted section
+ * is recognised when a blank line follows a quote block and non-">" text resumes.
  *
  * @param {string} text  Plain text email body
  * @returns {string}     Cleaned body with quoted sections removed
@@ -150,53 +151,39 @@ function removeAgentlyFooter(text) {
 function removeQuotedContent(text) {
   const lines = text.split('\n');
   const result = [];
-  let inQuote = false;
+  let i = 0;
 
-  for (let i = 0; i < lines.length; i++) {
+  while (i < lines.length) {
     const line = lines[i];
     const trimmed = line.trim();
 
-    // Signature separator
+    // Signature separator — stop processing entirely
     if (trimmed === '--' || trimmed === '-- ') break;
 
     // "On [date], [name] wrote:" pattern (English)
-    // e.g. "On Thu, Jun 24, 2026 at 9:38 PM John <john@example.com> wrote:"
-    if (/^On .{10,200} wrote:$/i.test(trimmed)) {
-      inQuote = true;
-      continue;
-    }
+    // Everything from this divider onwards is the original email — stop here.
+    if (/^On .{10,200} wrote:$/i.test(trimmed)) break;
 
-    // Chinese "发件人:" / "From:" header blocks that precede a quoted block
+    // Chinese / Outlook "发件人:" / "From:" header blocks mark the start of a quoted
+    // original email.  Detected when ≥2 header keywords appear within the next 5 lines.
+    // Everything from this block onwards is quoted — stop here.
     if (/^(发件人|From|发送时间|Sent|收件人|To|主题|Subject)\s*[:：]/.test(trimmed)) {
-      // Look ahead — if multiple such header lines follow, it's a quoted header block
       const nextFew = lines.slice(i, i + 5).map((l) => l.trim());
       const headerCount = nextFew.filter((l) =>
         /^(发件人|From|发送时间|Sent|收件人|To|主题|Subject)\s*[:：]/.test(l),
       ).length;
-      if (headerCount >= 2) {
-        inQuote = true;
-        continue;
-      }
+      if (headerCount >= 2) break;
     }
 
-    // Lines starting with ">" are quoted
+    // Lines starting with ">" — skip the whole contiguous block of quoted lines,
+    // then resume collecting content (inline quote, post-quote text is preserved).
     if (trimmed.startsWith('>')) {
-      inQuote = true;
+      while (i < lines.length && lines[i].trim().startsWith('>')) i++;
       continue;
     }
 
-    // A non-empty, non-quoted line resets inQuote only if it comes before
-    // any quoted block (don't resume after a quote section)
-    if (inQuote && trimmed !== '') {
-      // Allow text that clearly isn't a quote continuation to pass through,
-      // but only if it appears before we've processed any real quoted lines.
-      // Simple heuristic: once we've seen a ">" line, stop accepting more.
-      continue;
-    }
-
-    if (!inQuote) {
-      result.push(line);
-    }
+    result.push(line);
+    i++;
   }
 
   // Remove trailing blank lines
@@ -481,8 +468,16 @@ class ProfileDispatcher {
       maxLength: this.maxBodyLength,
     });
 
+    // System prompt: per-profile > global config > built-in default
+    const DEFAULT_SYSTEM_PROMPT =
+      '你是一个智能邮件 AI 助手。请直接回复以下邮件，像正常邮件往来一样给出回复正文。不要描述或分析邮件本身，直接切入内容回复。';
+    const systemPrompt =
+      profileConfig.system_prompt ||
+      this.config.system_prompt ||
+      DEFAULT_SYSTEM_PROMPT;
+
     const message = [
-      '你是一个智能邮件 AI 助手。请直接回复以下邮件，像正常邮件往来一样给出回复正文。不要描述或分析邮件本身，直接切入内容回复。',
+      systemPrompt,
       '',
       `发件人: ${senderName} <${senderEmail}>`,
       `主题: ${cleanSubject}`,
@@ -619,10 +614,15 @@ class ProfileDispatcher {
 
     const tag = `[dispatcher] msg=${messageId} profile=${profileName || cfg.command}`;
 
+    // Per-profile timeout_ms overrides global PROFILE_TIMEOUT_MS
+    const timeoutMs = (cfg.timeout_ms && Number.isFinite(cfg.timeout_ms) && cfg.timeout_ms > 0)
+      ? cfg.timeout_ms
+      : PROFILE_TIMEOUT_MS;
+
     let result;
     try {
       result = await spawnWithTimeout(cfg.command, args, {
-        timeoutMs: PROFILE_TIMEOUT_MS,
+        timeoutMs,
         env: {
           ...process.env,
           AGENT_MESSAGE: message,

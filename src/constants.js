@@ -11,11 +11,10 @@
 // 与 profiles/*.js 内部的 TIMEOUT_MS 保持一致。
 const PROFILE_TIMEOUT_MS = 300_000;
 
-// agently-cli 子进程的最大 stdout/stderr 缓冲。
-const CLI_MAX_BUFFER = 10 * 1024 * 1024;
+// agently-cli 子进程超时（单个 CLI 调用）。
+// 写操作是两阶段（2× CLI 调用），每次超时独立计算。
+const CLI_TIMEOUT_MS = 30_000;
 
-// dispatcher spawn profile 的 maxBuffer（profile 可能输出较多 streaming 事件）。
-const PROFILE_MAX_BUFFER = 20 * 1024 * 1024;
 
 // 邮件正文（送入 Profile 的 AGENT_MESSAGE）最大字符数，超过则截断。
 const MAX_BODY_LENGTH = 8000;
@@ -30,6 +29,10 @@ const PENDING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 // 默认轮询间隔（15 分钟）。
 const DEFAULT_POLL_INTERVAL_MS = 900_000;
 
+// 自适应轮询：有新邮件时的最小间隔（60 秒）。
+// API 限额 10 req/min，单次 poll 消耗 1 个请求，60s = 安全下限。
+const DEFAULT_ADAPTIVE_MIN_INTERVAL_MS = 60_000;
+
 // 默认每轮 poll 拉取的邮件数。
 const DEFAULT_POLL_LIMIT = 20;
 
@@ -42,9 +45,9 @@ const SESSION_ID_HASH_LENGTH = 16; // SHA1 前 16 位
 
 module.exports = {
   PROFILE_TIMEOUT_MS,
-  CLI_MAX_BUFFER,
-  PROFILE_MAX_BUFFER,
+  CLI_TIMEOUT_MS,
   MAX_BODY_LENGTH,
+  DEFAULT_ADAPTIVE_MIN_INTERVAL_MS,
   PENDING_MAX_RETRIES,
   PENDING_RETRY_COOLDOWN_MS,
   PENDING_RETENTION_MS,

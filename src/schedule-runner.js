@@ -125,7 +125,7 @@ class ScheduleRunner {
 
     try {
       const htmlBody = convertMarkdownToHtml(response);
-      this._mail.send(to, subject, htmlBody, { bodyFormat: 'html' });
+      await this._mail.send(to, subject, htmlBody, { bodyFormat: 'html' });
       process.stderr.write(`[schedule] Task "${name}" email sent to ${to}\n`);
     } catch (err) {
       process.stderr.write(`[schedule] Task "${name}" send failed: ${err.message}\n`);

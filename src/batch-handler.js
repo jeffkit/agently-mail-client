@@ -47,8 +47,8 @@ class BatchHandler {
     this._cfg            = opts.batchConfig || {};
     this._dryRun         = opts.dryRun || false;
     this._timer          = null;
-    // 上次发送摘要的时间（用于摘要中"已处理"栏的时间范围）
-    this._lastReportAt   = null;
+    // 上次发送摘要的时间从 BatchStore 加载（重启后不失忆）
+    this._lastReportAt   = this._store.getLastReportAt();
   }
 
   // ── 公开 API ───────────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ class BatchHandler {
       process.stderr.write(`[batch] Owner replied to summary but no queued messages found\n`);
       if (!this._dryRun) {
         try {
-          this._mail.reply(messageId, '当前没有待处理的邮件。', { bodyFormat: 'plain' });
+          await this._mail.reply(messageId, '当前没有待处理的邮件。', { bodyFormat: 'plain' });
         } catch (err) {
           process.stderr.write(`[batch] Reply failed: ${err.message}\n`);
         }
@@ -142,7 +142,7 @@ class BatchHandler {
       process.stderr.write(`[batch] AI interpretation failed: ${err.message}\n`);
       if (!this._dryRun) {
         try {
-          this._mail.reply(
+          await this._mail.reply(
             messageId,
             `指令解读失败：${err.message}\n\n请重新发送指令。`,
             { bodyFormat: 'plain' },
@@ -164,7 +164,7 @@ class BatchHandler {
     if (!this._dryRun) {
       try {
         const html = convertMarkdownToHtml(summary);
-        this._mail.reply(messageId, html, { bodyFormat: 'html' });
+        await this._mail.reply(messageId, html, { bodyFormat: 'html' });
       } catch (err) {
         process.stderr.write(`[batch] Execution summary reply failed: ${err.message}\n`);
       }
@@ -208,13 +208,14 @@ class BatchHandler {
     if (this._dryRun) {
       process.stderr.write(`[batch][DRY_RUN] Summary subject: ${subject}\n${body}\n`);
       this._lastReportAt = now;
+      this._store.setLastReportAt(now);
       return;
     }
 
     for (const adminEmail of admins) {
       try {
         const html = convertMarkdownToHtml(body);
-        this._mail.send(adminEmail, subject, html, { bodyFormat: 'html' });
+        await this._mail.send(adminEmail, subject, html, { bodyFormat: 'html' });
         process.stderr.write(`[batch] Summary sent to ${adminEmail}\n`);
       } catch (err) {
         process.stderr.write(`[batch] Summary send failed (${adminEmail}): ${err.message}\n`);
@@ -222,6 +223,7 @@ class BatchHandler {
     }
 
     this._lastReportAt = now;
+    this._store.setLastReportAt(now);
     this._store.cleanup();
   }
 

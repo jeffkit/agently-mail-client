@@ -38,13 +38,21 @@ class BatchStore {
     try {
       fs.mkdirSync(path.dirname(this.storeFile), { recursive: true });
       if (fs.existsSync(this.storeFile)) {
-        this._data = JSON.parse(fs.readFileSync(this.storeFile, 'utf8'));
+        const raw = JSON.parse(fs.readFileSync(this.storeFile, 'utf8'));
+        // _meta is a reserved key for store-level metadata (not a message entry)
+        this._meta = raw._meta || {};
+        this._data = {};
+        for (const [k, v] of Object.entries(raw)) {
+          if (k !== '_meta') this._data[k] = v;
+        }
       } else {
         this._data = {};
+        this._meta = {};
       }
     } catch (err) {
       process.stderr.write(`[batch-store] Failed to load ${this.storeFile}: ${err.message}\n`);
       this._data = {};
+      this._meta = {};
     }
   }
 
@@ -53,11 +61,32 @@ class BatchStore {
     try {
       fs.mkdirSync(dir, { recursive: true });
       const tmp = path.join(dir, `.batch-queue.${process.pid}.${Date.now()}.tmp`);
-      fs.writeFileSync(tmp, JSON.stringify(this._data, null, 2), 'utf8');
+      // Persist _meta alongside message entries under the reserved '_meta' key
+      const payload = { _meta: this._meta || {}, ...this._data };
+      fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8');
       fs.renameSync(tmp, this.storeFile);
     } catch (err) {
       process.stderr.write(`[batch-store] Failed to save: ${err.message}\n`);
     }
+  }
+
+  /**
+   * Persist the timestamp of the last summary report so restarts don't re-report.
+   * @param {string} isoTimestamp
+   */
+  setLastReportAt(isoTimestamp) {
+    this._load();
+    this._meta.lastReportAt = isoTimestamp;
+    this._save();
+  }
+
+  /**
+   * Return the persisted last-report timestamp, or null if never reported.
+   * @returns {string|null}
+   */
+  getLastReportAt() {
+    this._load();
+    return this._meta.lastReportAt || null;
   }
 
   /**

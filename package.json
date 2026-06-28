@@ -1,6 +1,6 @@
 {
   "name": "agently-mail-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agently Mail Bridge — polls an Agently Mail inbox, routes emails by subject prefix to AgentProc-compliant profiles, and auto-replies",
   "main": "src/index.js",
   "types": "src/index.d.ts",

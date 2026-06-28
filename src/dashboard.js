@@ -203,6 +203,13 @@ function buildHtml() {
   .section-label { font-size: 12px; font-weight: 600; color: var(--muted);
                    text-transform: uppercase; letter-spacing: .05em; margin: 14px 0 6px; }
   .section-label:first-child { margin-top: 0; }
+  .btn { padding: 6px 14px; border: none; border-radius: 6px; font-size: 13px;
+         font-weight: 500; cursor: pointer; transition: opacity .15s; }
+  .btn:hover { opacity: .85; }
+  .btn-green { background: #d1fae5; color: var(--green); }
+  .btn-red   { background: #fee2e2; color: var(--red); }
+  .btn-gray  { background: #f3f4f6; color: var(--muted); }
+  .btn-icon  { padding: 3px 8px; font-size: 11px; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -243,6 +250,18 @@ function buildHtml() {
   <div class="card">
     <div class="card-header"><h2>🛡️ 访问控制</h2></div>
     <div class="card-body" id="acl-body">加载中…</div>
+    <div style="padding:0 18px 14px;border-top:1px solid var(--border);margin-top:4px">
+      <div class="section-label" style="padding-top:12px">快速编辑动态名单</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+        <input id="acl-input" placeholder="user@example.com 或 @domain.com"
+               style="flex:1;min-width:200px;padding:6px 10px;border:1px solid var(--border);
+                      border-radius:6px;font-size:13px;outline:none"/>
+        <button onclick="aclAction('allow')" class="btn btn-green">放行</button>
+        <button onclick="aclAction('deny')"  class="btn btn-red">封禁</button>
+        <button onclick="aclAction('reset')" class="btn btn-gray">重置</button>
+      </div>
+      <div id="acl-msg" style="font-size:12px;color:var(--muted);margin-top:6px;min-height:18px"></div>
+    </div>
   </div>
 
   <!-- 批处理队列 -->
@@ -264,8 +283,8 @@ function buildHtml() {
       <span class="count" id="history-count"></span>
     </div>
     <div class="card-body">
-      <table><thead><tr><th>发件人</th><th>主题</th><th>加入时间</th><th>状态</th></tr></thead>
-      <tbody id="history-tbody"><tr><td colspan="4" class="empty">暂无记录</td></tr></tbody></table>
+      <table><thead><tr><th>发件人</th><th>主题</th><th>加入时间</th><th>状态</th><th></th></tr></thead>
+      <tbody id="history-tbody"><tr><td colspan="5" class="empty">暂无记录</td></tr></tbody></table>
     </div>
   </div>
 
@@ -358,13 +377,14 @@ function render(state) {
   const hist = state.pending.entries || [];
   document.getElementById('history-count').textContent = '最近 ' + hist.length + ' 条';
   if (!hist.length) {
-    hb.innerHTML = '<tr><td colspan="4" class="empty">暂无记录</td></tr>';
+    hb.innerHTML = '<tr><td colspan="5" class="empty">暂无记录</td></tr>';
   } else {
     hb.innerHTML = hist.map(e =>
       \`<tr><td>\${e.from_name || e.from_email}</td>
-           <td>\${e.subject || '-'}</td>
+           <td>\${e.subject || '-'}\${e.last_error ? '<br><small style="color:var(--red);font-size:11px">' + e.last_error.slice(0,80) + '</small>' : ''}</td>
            <td style="color:var(--muted);font-size:12px">\${fmt(e.added_at)}</td>
-           <td>\${statusTag(e.replied ? 'replied' : 'queued')}</td></tr>\`
+           <td>\${statusTag(e.replied ? 'replied' : (e.retries > 0 ? 'failed' : 'queued'))}</td>
+           <td>\${!e.replied ? \`<button class="btn btn-gray btn-icon" onclick="discardPending('\${e.message_id}')">丢弃</button>\` : ''}</td></tr>\`
     ).join('');
   }
 
@@ -395,6 +415,44 @@ async function refresh() {
   }
 }
 
+async function aclAction(action) {
+  const address = document.getElementById('acl-input').value.trim();
+  const msg = document.getElementById('acl-msg');
+  if (!address) { msg.textContent = '请输入邮箱地址或域名'; msg.style.color='var(--red)'; return; }
+  msg.textContent = '处理中…'; msg.style.color = 'var(--muted)';
+  try {
+    const r = await fetch('/api/acl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, address }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      msg.textContent = { allow:'✅ 已放行', deny:'🚫 已封禁', reset:'↩️ 已重置' }[action] + ': ' + address;
+      msg.style.color = 'var(--green)';
+      document.getElementById('acl-input').value = '';
+      setTimeout(refresh, 500);
+    } else {
+      msg.textContent = '失败: ' + d.error;
+      msg.style.color = 'var(--red)';
+    }
+  } catch(e) { msg.textContent = '请求失败: ' + e.message; msg.style.color='var(--red)'; }
+}
+
+async function discardPending(messageId) {
+  if (!confirm('确认丢弃此邮件的重试队列？')) return;
+  try {
+    const r = await fetch('/api/pending', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'discard', message_id: messageId }),
+    });
+    const d = await r.json();
+    if (d.ok) { refresh(); }
+    else { alert('失败: ' + d.error); }
+  } catch(e) { alert('请求失败: ' + e.message); }
+}
+
 refresh();
 setInterval(refresh, 15000);   // 每 15 秒自动刷新
 </script>
@@ -402,10 +460,76 @@ setInterval(refresh, 15000);   // 每 15 秒自动刷新
 </html>`;
 }
 
+// ── Write API helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Parse a JSON body from an incoming request.
+ * @param {http.IncomingMessage} req
+ * @returns {Promise<object>}
+ */
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try { resolve(JSON.parse(body || '{}')); }
+      catch (e) { reject(new Error('Invalid JSON body')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Execute an ACL mutation on the dynamic ACL file.
+ * Returns { ok: true } or { error: string }.
+ */
+function execAclMutation(action, address, opts = {}) {
+  const storeDir = opts.storeDir || path.join(os.homedir(), '.agently-mail-client');
+  const aclFile  = opts.aclConfig || (() => {
+    const c = path.join(process.cwd(), 'email-acl.yaml');
+    return fs.existsSync(c) ? c : null;
+  })();
+  try {
+    const acl = new AclConfig({
+      aclConfigFile: aclFile,
+      dynamicFile:   path.join(storeDir, 'acl-dynamic.json'),
+    });
+    if (action === 'allow')  acl.dynamicAllow([address]);
+    else if (action === 'deny')  acl.dynamicDeny([address]);
+    else if (action === 'reset') acl.dynamicReset([address]);
+    else throw new Error(`Unknown action: ${action}`);
+    return { ok: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+/**
+ * Remove a single entry from the pending store (mark as replied so retry ignores it).
+ */
+function discardPending(messageId, opts = {}) {
+  const storeDir = opts.storeDir || path.join(os.homedir(), '.agently-mail-client');
+  try {
+    const store = new PendingStore(path.join(storeDir, 'pending.json'));
+    store.markReplied(messageId);
+    return { ok: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 
 /**
  * 启动 Dashboard HTTP 服务。
+ *
+ * Read API:
+ *   GET /          → HTML 面板
+ *   GET /api/state → JSON 状态快照（面板 Ajax 轮询用）
+ *
+ * Write API（需 JSON body）:
+ *   POST /api/acl       { action: 'allow'|'deny'|'reset', address: string }
+ *   POST /api/pending   { action: 'discard', message_id: string }
  *
  * @param {object} [opts]
  * @param {number} [opts.port=3030]
@@ -421,28 +545,69 @@ function startDashboard(opts = {}) {
   const host = opts.host || '127.0.0.1';
   const html = buildHtml();
 
-  const server = http.createServer((req, res) => {
-    if (req.method !== 'GET') {
-      res.writeHead(405);
-      res.end('Method Not Allowed');
-      return;
-    }
-
-    if (req.url === '/api/state') {
-      try {
-        const state = readState(opts);
-        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify(state));
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
+  const server = http.createServer(async (req, res) => {
+    // ── GET endpoints ──
+    if (req.method === 'GET') {
+      if (req.url === '/api/state') {
+        try {
+          const state = readState(opts);
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(state));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
       }
+      // All other GET → HTML panel
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
       return;
     }
 
-    // 所有其他路径返回 HTML 面板
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(html);
+    // ── POST endpoints (write API) ──
+    if (req.method === 'POST') {
+      let body;
+      try { body = await parseJsonBody(req); }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+        return;
+      }
+
+      if (req.url === '/api/acl') {
+        const { action, address } = body;
+        if (!action || !address) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'action and address required' }));
+          return;
+        }
+        const result = execAclMutation(action, address, opts);
+        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      if (req.url === '/api/pending') {
+        const { action, message_id } = body;
+        if (action === 'discard' && message_id) {
+          const result = discardPending(message_id, opts);
+          res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+          return;
+        }
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'action=discard and message_id required' }));
+        return;
+      }
+
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+      return;
+    }
+
+    res.writeHead(405);
+    res.end('Method Not Allowed');
   });
 
   server.listen(port, host, () => {

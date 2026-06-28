@@ -30,6 +30,16 @@
 #
 # deny_action: silent
 
+# ── 系统 Prompt（可选） ───────────────────────────────────────────────────────
+#
+# system_prompt: 注入到所有 Profile 的 AGENT_MESSAGE 最前面（全局默认值）
+#   不配置时使用内置默认值（中文邮件助手角色）
+#   每个 Profile 也可以单独设置 system_prompt，优先级高于全局配置
+#
+# system_prompt: "You are a helpful email assistant. Reply directly and concisely."
+
+# ───────────────────────────────────────────────────────────────────────────────
+
 # deny_message: 自定义拒绝通知邮件正文（仅 deny_action: notify 时生效）
 #
 # deny_message: "感谢来信，您无权使用此服务，请联系管理员。"
@@ -95,3 +105,7 @@ profiles:
     # per-profile 白名单示例：只有自己能用 echo（调试专用）
     # allowed_senders:
     #   - me@gmail.com
+    # per-profile system_prompt 示例（覆盖全局）：
+    # system_prompt: "You are an echo bot. Return the message as-is."
+    # per-profile timeout（毫秒，默认 300000 = 5 分钟）：
+    # timeout_ms: 600000

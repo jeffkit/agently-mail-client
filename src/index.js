@@ -30,7 +30,10 @@ const { AdminHandler } = require('./admin-handler');
 const { BatchStore } = require('./batch-store');
 const { BatchHandler } = require('./batch-handler');
 const { matchesAny } = require('./sender-acl');
-const { DEFAULT_POLL_INTERVAL_MS } = require('./constants');
+const {
+  DEFAULT_POLL_INTERVAL_MS,
+  DEFAULT_ADAPTIVE_MIN_INTERVAL_MS,
+} = require('./constants');
 const { ScheduleRunner } = require('./schedule-runner');
 const builtinHandlers = require('./builtin-handlers');
 
@@ -47,11 +50,11 @@ const createProfile = _createProfile;
  * Includes all aliases to guard against edge cases.
  *
  * @param {AgentlyMailClient} mail
- * @returns {Set<string>}  lowercase email addresses
+ * @returns {Promise<Set<string>>}  lowercase email addresses
  */
-function getOwnAddresses(mail) {
+async function getOwnAddresses(mail) {
   try {
-    const me = mail.me();
+    const me = await mail.me();
     const addresses = new Set();
     for (const alias of (me?.aliases || [])) {
       if (alias.email) addresses.add(alias.email.toLowerCase());
@@ -102,6 +105,8 @@ function createEmailBridge(options = {}) {
       return fs.existsSync(candidate) ? candidate : null;
     })(),
     pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
+    adaptivePolling = process.env.ADAPTIVE_POLLING !== '0', // default: on
+    adaptiveMinIntervalMs = DEFAULT_ADAPTIVE_MIN_INTERVAL_MS,
     dryRun = process.env.DRY_RUN === '1',
     limit = 20,
     filterSelfSent = true,
@@ -195,38 +200,43 @@ function createEmailBridge(options = {}) {
     `[email-bridge] Loaded ${profileNames.length} profile(s): ${profileNames.join(', ')}\n`,
   );
 
-  // Verify auth and collect own addresses for self-filter
+  // Verify auth and collect own addresses for self-filter (async, runs at startup)
   let ownAddresses = new Set();
-  try {
-    const me = mail.me();
-    const email = me?.aliases?.[0]?.email || 'unknown';
-    ownAddresses = getOwnAddresses(mail);
-    const adminList = aclCfg.adminSenders;
-    process.stderr.write(
-      `[email-bridge] Monitoring ${email} every ${pollIntervalMs / 1000}s\n` +
-      `[email-bridge] Subject prefix routing: [profile-name], default=${dispatcher.config.default}\n` +
-      (filterSelfSent ? `[email-bridge] Self-sent filter: ON (${[...ownAddresses].join(', ')})\n` : '') +
-      (acl.isOpenAccess() ? '' : `[email-bridge] Sender ACL: ON (deny_action=${acl.denyAction})\n`) +
-      (adminList.length > 0 ? `[email-bridge] Admin senders: ${adminList.join(', ')}\n` : '') +
-      (aclConfigFile ? `[email-bridge] ACL config: ${aclConfigFile}\n` : '[email-bridge] ACL config: (none — open access)\n'),
-    );
-  } catch (err) {
-    // Rate-limit (429) is transient — warn and continue without self-filter.
-    // Any other error (auth invalid, binary missing) is fatal.
-    const isRateLimit = /429|rate.?limit/i.test(err.message);
-    if (isRateLimit) {
+  (async () => {
+    try {
+      const me = await mail.me();
+      const email = me?.aliases?.[0]?.email || 'unknown';
+      ownAddresses = await getOwnAddresses(mail);
+      const adminList = aclCfg.adminSenders;
+      const pollDesc = adaptivePolling
+        ? `adaptive (${adaptiveMinIntervalMs / 1000}s–${pollIntervalMs / 1000}s)`
+        : `${pollIntervalMs / 1000}s fixed`;
       process.stderr.write(
-        `[email-bridge] ⚠ +me rate-limited at startup; self-sent filter disabled until next poll.\n` +
-        `[email-bridge]   Profile routing: default=${dispatcher.config.default}\n`,
+        `[email-bridge] Monitoring ${email} every ${pollDesc}\n` +
+        `[email-bridge] Subject prefix routing: [profile-name], default=${dispatcher.config.default}\n` +
+        (filterSelfSent ? `[email-bridge] Self-sent filter: ON (${[...ownAddresses].join(', ')})\n` : '') +
+        (acl.isOpenAccess() ? '' : `[email-bridge] Sender ACL: ON (deny_action=${acl.denyAction})\n`) +
+        (adminList.length > 0 ? `[email-bridge] Admin senders: ${adminList.join(', ')}\n` : '') +
+        (aclConfigFile ? `[email-bridge] ACL config: ${aclConfigFile}\n` : '[email-bridge] ACL config: (none — open access)\n'),
       );
-    } else {
-      process.stderr.write(
-        `[email-bridge] Auth check failed: ${err.message}\n` +
-        `  Run: agently-cli auth login\n`,
-      );
-      process.exit(3);
+    } catch (err) {
+      // Rate-limit (429) is transient — warn and continue without self-filter.
+      // Any other error (auth invalid, binary missing) is fatal.
+      const isRateLimit = /429|rate.?limit/i.test(err.message);
+      if (isRateLimit) {
+        process.stderr.write(
+          `[email-bridge] ⚠ +me rate-limited at startup; self-sent filter disabled until next poll.\n` +
+          `[email-bridge]   Profile routing: default=${dispatcher.config.default}\n`,
+        );
+      } else {
+        process.stderr.write(
+          `[email-bridge] Auth check failed: ${err.message}\n` +
+          `  Run: agently-cli auth login\n`,
+        );
+        process.exit(3);
+      }
     }
-  }
+  })();
 
   /**
    * Lightweight trace id generator: 6 hex chars. Used to correlate log lines
@@ -264,7 +274,7 @@ function createEmailBridge(options = {}) {
       const body = acl.denyMessage ||
         '感谢您的来信。您的邮件无法被自动处理，请联系管理员。\n\nThank you for your message. Your email could not be processed automatically. Please contact the administrator.';
       try {
-        client.reply(message_id, body, { bodyFormat: 'plain' });
+        await client.reply(message_id, body, { bodyFormat: 'plain' });
         process.stderr.write(`[email-bridge] ACL deny notification sent: ${message_id}\n`);
       } catch (err) {
         process.stderr.write(`[email-bridge] ACL notify reply failed: ${err.message}\n`);
@@ -294,7 +304,7 @@ function createEmailBridge(options = {}) {
 
       let fullMsg;
       try {
-        fullMsg = client.read(message_id);
+        fullMsg = await client.read(message_id);
       } catch (err) {
         log(tid, `${tag} Failed to read ${message_id}: ${err.message}`);
         pending.markFailed(message_id, `read failed: ${err.message}`);
@@ -335,7 +345,7 @@ function createEmailBridge(options = {}) {
       if (!dryRun) {
         try {
           const htmlResponse = convertMarkdownToHtml(response);
-          client.reply(message_id, htmlResponse, { bodyFormat: 'html' });
+          await client.reply(message_id, htmlResponse, { bodyFormat: 'html' });
           pending.markReplied(message_id);
           log(tid, `${tag} Replied (HTML): ${message_id}`);
         } catch (err) {
@@ -378,7 +388,7 @@ function createEmailBridge(options = {}) {
         log(tid, `Admin message from ${senderEmail}: "${subject}"`);
         let fullMsg;
         try {
-          fullMsg = client.read(message_id);
+          fullMsg = await client.read(message_id);
         } catch (err) {
           log(tid, `Admin message read failed: ${err.message} — will retry on next sweep`);
           pending.add(msg);
@@ -417,7 +427,7 @@ function createEmailBridge(options = {}) {
         pending.add(msg);
         let fullMsg;
         try {
-          fullMsg = client.read(message_id);
+          fullMsg = await client.read(message_id);
         } catch (err) {
           log(tid, `Batch read failed for ${message_id}: ${err.message}`);
           pending.markFailed(message_id, `read failed: ${err.message}`);
@@ -438,7 +448,13 @@ function createEmailBridge(options = {}) {
       // 兜底：handler 内部错误不能让整个 poll tick 失败累积
       log(tid, `Unhandled error in poll handler for ${message_id}: ${err.message}`);
     }
-  }, { limit, afterTimestamp: savedCursor || undefined, saveCursor });
+  }, {
+    limit,
+    afterTimestamp: savedCursor || undefined,
+    saveCursor,
+    adaptive: adaptivePolling,
+    minIntervalMs: adaptiveMinIntervalMs,
+  });
 
   // Retry sweep: runs on every poll interval even when inbox is empty.
   // Delayed by half an interval so it doesn't fire simultaneously with the

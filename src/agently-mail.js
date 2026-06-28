@@ -8,6 +8,9 @@
  * returns a confirmation token; the client then re-runs with that token and
  * resolves only after the server confirms success.
  *
+ * All methods are async — they wrap `spawnWithTimeout` so the Node.js event
+ * loop is never blocked during CLI invocations.
+ *
  * @example
  * const { AgentlyMailClient } = require('agently-mail-client');
  * const mail = new AgentlyMailClient();
@@ -20,8 +23,8 @@
  * });
  */
 
-const { spawnSync } = require('child_process');
-const { POLL_SEEN_CACHE_SIZE, CLI_MAX_BUFFER } = require('./constants');
+const { POLL_SEEN_CACHE_SIZE, CLI_TIMEOUT_MS } = require('./constants');
+const { spawnWithTimeout } = require('./spawn');
 
 // ---------------------------------------------------------------------------
 // Simple bounded LRU set — caps the seen-ids cache so a long-running process
@@ -67,36 +70,38 @@ class AgentlyMailError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Low-level CLI runner
+// Low-level CLI runner (async — never blocks the event loop)
 // ---------------------------------------------------------------------------
 
 /**
- * Run `agently-cli <args>` synchronously and return parsed JSON data.
- * Throws AgentlyMailError on non-zero exit codes.
+ * Run `agently-cli <args>` and return parsed JSON data.
+ * Throws AgentlyMailError on non-zero exit codes or spawn failure.
  *
  * @param {string[]} args
- * @returns {unknown} data field from the JSON envelope
+ * @returns {Promise<unknown>} data field from the JSON envelope
  */
-function runCli(args) {
-  const result = spawnSync('agently-cli', args, {
-    encoding: 'utf8',
-    maxBuffer: CLI_MAX_BUFFER,
-  });
+async function runCli(args) {
+  let result;
+  try {
+    result = await spawnWithTimeout('agently-cli', args, { timeoutMs: CLI_TIMEOUT_MS });
+  } catch (err) {
+    throw new AgentlyMailError(`Failed to spawn agently-cli: ${err.message}`, -1);
+  }
 
-  if (result.error) {
+  if (result.timedOut) {
     throw new AgentlyMailError(
-      `Failed to spawn agently-cli: ${result.error.message}`,
+      `agently-cli timed out after ${CLI_TIMEOUT_MS}ms (args: ${args.slice(0, 3).join(' ')})`,
       -1,
     );
   }
 
-  const exitCode = result.status ?? -1;
+  const exitCode = result.code ?? -1;
   let envelope;
   try {
     envelope = JSON.parse(result.stdout || '{}');
   } catch {
     throw new AgentlyMailError(
-      `agently-cli returned non-JSON output (exit ${exitCode}): ${result.stdout}`,
+      `agently-cli returned non-JSON output (exit ${exitCode}): ${result.stdout?.slice(0, 200)}`,
       exitCode,
     );
   }
@@ -123,11 +128,11 @@ function runCli(args) {
  * First call returns a confirmation_token; we automatically re-run with it.
  *
  * @param {string[]} args  CLI args WITHOUT --confirmation-token
- * @returns {unknown} final data from the confirmed call
+ * @returns {Promise<unknown>} final data from the confirmed call
  */
-function runConfirmed(args) {
+async function runConfirmed(args) {
   // Phase 1 — get confirmation token
-  const phase1 = runCli(args);
+  const phase1 = await runCli(args);
 
   // Some commands may succeed without confirmation (e.g. dry-run)
   if (!phase1?.confirmation_token) {
@@ -160,7 +165,7 @@ class AgentlyMailClient {
    * @param {boolean} [options.isUnread]
    * @returns {{ messages: object[], pagination: object }}
    */
-  list(options = {}) {
+  async list(options = {}) {
     const args = ['message', '+list'];
     if (options.dir) args.push('--dir', options.dir);
     if (options.limit != null) args.push('--limit', String(options.limit));
@@ -169,7 +174,7 @@ class AgentlyMailClient {
     if (options.before) args.push('--before', options.before);
     if (options.hasAttachments) args.push('--has-attachments');
     if (options.isUnread) args.push('--is-unread');
-    const data = runCli(args);
+    const data = await runCli(args);
     return { messages: data?.data ?? [], pagination: data?.pagination ?? {} };
   }
 
@@ -179,8 +184,8 @@ class AgentlyMailClient {
    * @param {number} [limit=20]
    * @returns {object[]}
    */
-  listUnread(limit = 20) {
-    return this.list({ isUnread: true, limit }).messages;
+  async listUnread(limit = 20) {
+    return (await this.list({ isUnread: true, limit })).messages;
   }
 
   /**
@@ -189,7 +194,7 @@ class AgentlyMailClient {
    * @param {string} messageId  msg_xxx
    * @returns {object}
    */
-  read(messageId) {
+  async read(messageId) {
     return runCli(['message', '+read', '--id', messageId]);
   }
 
@@ -210,7 +215,7 @@ class AgentlyMailClient {
    * @param {string} [options.cursor]
    * @returns {{ messages: object[], pagination: object }}
    */
-  search(query, options = {}) {
+  async search(query, options = {}) {
     const args = ['message', '+search', '--q', query];
     if (options.searchIn) args.push('--search-in', options.searchIn);
     if (options.from) args.push('--from', options.from);
@@ -222,7 +227,7 @@ class AgentlyMailClient {
     if (options.isUnread) args.push('--is-unread');
     if (options.limit != null) args.push('--limit', String(options.limit));
     if (options.cursor) args.push('--cursor', options.cursor);
-    const data = runCli(args);
+    const data = await runCli(args);
     return { messages: data?.data ?? [], pagination: data?.pagination ?? {} };
   }
 
@@ -231,7 +236,7 @@ class AgentlyMailClient {
    *
    * @returns {object}
    */
-  me() {
+  async me() {
     return runCli(['+me']);
   }
 
@@ -252,7 +257,7 @@ class AgentlyMailClient {
    * @param {string[]}        [options.attachments]  Relative file paths
    * @returns {object}
    */
-  send(to, subject, body, options = {}) {
+  async send(to, subject, body, options = {}) {
     const args = ['message', '+send', '--subject', subject, '--body', body];
     const recipients = Array.isArray(to) ? to : [to];
     for (const r of recipients) args.push('--to', r);
@@ -284,7 +289,7 @@ class AgentlyMailClient {
    * @param {string[]}        [options.attachments]
    * @returns {object}
    */
-  reply(messageId, body, options = {}) {
+  async reply(messageId, body, options = {}) {
     const args = ['message', '+reply', '--id', messageId, '--body', body];
     if (options.replyAll) args.push('--reply-all');
     if (options.cc) {
@@ -316,7 +321,7 @@ class AgentlyMailClient {
    * @param {string[]}        [options.attachments]
    * @returns {object}
    */
-  forward(messageId, to, body, options = {}) {
+  async forward(messageId, to, body, options = {}) {
     const recipients = Array.isArray(to) ? to : [to];
     const args = ['message', '+forward', '--id', messageId];
     for (const r of recipients) args.push('--to', r);
@@ -343,7 +348,7 @@ class AgentlyMailClient {
    * @param {string} messageId  msg_xxx
    * @returns {object}
    */
-  trash(messageId) {
+  async trash(messageId) {
     return runConfirmed(['message', '+trash', '--id', messageId]);
   }
 
@@ -352,40 +357,51 @@ class AgentlyMailClient {
   // -------------------------------------------------------------------------
 
   /**
-   * Poll for new inbox messages at a fixed interval using a time-cursor strategy.
+   * Poll for new inbox messages using a time-cursor strategy with adaptive interval.
    *
    * Unlike the previous unread-flag approach, this method uses `--after <timestamp>`
    * so that messages are never missed due to external read operations (e.g. manual
    * `agently-cli message +read`, reading in another client, or a crash mid-processing).
    *
-   * The cursor (`afterTimestamp`) advances only after all messages in a batch have
-   * been handed to the handler. It is persisted via `options.saveCursor` so restarts
-   * resume from where they left off.
+   * **Adaptive interval** (when `options.adaptive` is enabled, default: true):
+   *   - New emails found  → next poll after `minIntervalMs` (stay alert)
+   *   - Empty poll        → next poll after `currentInterval × stepFactor` (cool down)
+   *   - Idle too long     → interval is capped at `intervalMs` (the configured max)
+   *   This keeps the bridge responsive during active periods while respecting rate limits
+   *   during quiet ones.  The API limit is 10 req/min; `minIntervalMs` defaults to 60 s.
    *
-   * De-duplication: a Set of seen message_ids prevents the same message from being
-   * dispatched twice within one process lifetime (the server may return messages whose
-   * created_at equals the cursor boundary).
+   * De-duplication: a BoundedSet of seen message_ids prevents the same message from
+   * being dispatched twice within one process lifetime (the server may return messages
+   * whose created_at equals the cursor boundary).
    *
-   * The handler is called once per message.  If the handler throws, the error is
-   * logged to stderr and polling continues.  Call `stop()` on the returned controller
-   * to stop polling.
-   *
-   * @param {number} intervalMs
+   * @param {number} intervalMs  Maximum (base) poll interval in ms
    * @param {(msg: object, client: AgentlyMailClient) => Promise<void>} handler
    * @param {object} [options]
-   * @param {number} [options.limit=20]          Max messages per poll cycle
-   * @param {string} [options.afterTimestamp]    Initial cursor (ISO 8601); defaults to now
-   * @param {(ts: string) => void} [options.saveCursor]  Called after each batch to persist cursor
-   * @returns {{ stop: () => void }}
+   * @param {number}  [options.limit=20]           Max messages per poll cycle
+   * @param {string}  [options.afterTimestamp]     Initial cursor (ISO 8601); defaults to now
+   * @param {(ts: string) => void} [options.saveCursor]  Persist cursor after each batch
+   * @param {boolean} [options.adaptive=true]      Enable adaptive interval (default true)
+   * @param {number}  [options.minIntervalMs=60000] Min interval when emails are found
+   * @param {number}  [options.stepFactor=1.5]     Idle cool-down multiplier per empty tick
+   * @returns {{ stop: () => void, currentIntervalMs: () => number }}
    */
   poll(intervalMs, handler, options = {}) {
-    const limit = options.limit ?? 20;
+    const limit            = options.limit ?? 20;
+    const adaptive         = options.adaptive !== false; // default true
+    const minIntervalMs    = options.minIntervalMs ?? 60_000;  // 1 min floor
+    const stepFactor       = options.stepFactor ?? 1.5;
+    const maxIntervalMs    = intervalMs; // configured value is the ceiling
+
     // Start from now if no saved cursor: don't reprocess the entire inbox on first run
     let afterTimestamp = options.afterTimestamp || new Date().toISOString();
-    const saveCursor = options.saveCursor || null;
-    const seenIds = new BoundedSet();
-    let stopped = false;
-    let timer = null;
+    const saveCursor   = options.saveCursor || null;
+    const seenIds      = new BoundedSet();
+    let stopped        = false;
+    let timer          = null;
+
+    // Current adaptive interval — starts at maxIntervalMs (conservative on start)
+    let currentInterval = maxIntervalMs;
+
     // Exponential backoff state for 429 rate-limit responses.
     // Resets to 0 on any successful poll; caps at 4 doublings (16× interval).
     let backoffLevel = 0;
@@ -393,16 +409,19 @@ class AgentlyMailClient {
 
     const tick = async () => {
       if (stopped) return;
+      let foundMessages = false;
       try {
-        const { messages } = this.list({ after: afterTimestamp, limit, dir: 'inbox' });
+        const { messages } = await this.list({ after: afterTimestamp, limit, dir: 'inbox' });
         // Sort ascending by created_at so we process oldest-first and advance cursor correctly
         messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
-        // Successful poll — reset backoff
+        // Successful poll — reset rate-limit backoff
         if (backoffLevel > 0) {
-          process.stderr.write(`[agently-mail] Rate limit cleared, resuming normal interval.\n`);
+          process.stderr.write(`[agently-mail] Rate limit cleared, resuming adaptive interval.\n`);
           backoffLevel = 0;
         }
+
+        foundMessages = messages.length > 0;
 
         let latestTimestamp = afterTimestamp;
         for (const msg of messages) {
@@ -434,19 +453,33 @@ class AgentlyMailClient {
         const isRateLimit = /429|rate.?limit/i.test(err?.message || '');
         if (isRateLimit) {
           backoffLevel = Math.min(backoffLevel + 1, BACKOFF_MAX);
-          const backoffMs = intervalMs * Math.pow(2, backoffLevel);
+          const backoffMs = maxIntervalMs * Math.pow(2, backoffLevel);
           process.stderr.write(
             `[agently-mail] Rate limited (429), backoff level ${backoffLevel}: next poll in ${Math.round(backoffMs / 1000)}s\n`,
           );
           if (!stopped) timer = setTimeout(tick, backoffMs);
           return;
         }
-        process.stderr.write(
-          `[agently-mail] poll error: ${err?.message || err}\n`,
-        );
+        process.stderr.write(`[agently-mail] poll error: ${err?.message || err}\n`);
       }
+
       if (!stopped) {
-        timer = setTimeout(tick, intervalMs);
+        if (adaptive) {
+          if (foundMessages) {
+            // New emails: stay alert, poll sooner
+            currentInterval = minIntervalMs;
+          } else {
+            // Idle: gradually cool down toward maxIntervalMs
+            currentInterval = Math.min(Math.round(currentInterval * stepFactor), maxIntervalMs);
+          }
+          process.stderr.write(
+            `[agently-mail] Next poll in ${Math.round(currentInterval / 1000)}s` +
+            (foundMessages ? ' (active)' : ' (idle)') + '\n',
+          );
+        } else {
+          currentInterval = maxIntervalMs;
+        }
+        timer = setTimeout(tick, currentInterval);
       }
     };
 
@@ -458,6 +491,8 @@ class AgentlyMailClient {
         stopped = true;
         if (timer) clearTimeout(timer);
       },
+      /** Returns the current adaptive interval in milliseconds. */
+      currentIntervalMs() { return currentInterval; },
     };
   }
 }

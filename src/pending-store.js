@@ -33,11 +33,14 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+const {
+  PENDING_MAX_RETRIES: MAX_RETRIES,
+  PENDING_RETRY_COOLDOWN_MS: RETRY_COOLDOWN_MS,
+  PENDING_RETENTION_MS,
+} = require('./constants');
+
 const DEFAULT_STORE_DIR = path.join(os.homedir(), '.agently-mail-client');
 const DEFAULT_STORE_FILE = path.join(DEFAULT_STORE_DIR, 'pending.json');
-
-const MAX_RETRIES = 5;           // 超过此次数不再重试
-const RETRY_COOLDOWN_MS = 60_000; // 两次重试之间最少间隔 1 分钟
 
 class PendingStore {
   /**
@@ -174,11 +177,10 @@ class PendingStore {
    */
   cleanup() {
     this._load();
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     let changed = false;
     for (const [id, entry] of Object.entries(this._data)) {
       if (entry.replied && entry.replied_at) {
-        if (new Date(entry.replied_at).getTime() < cutoff) {
+        if (new Date(entry.replied_at).getTime() < Date.now() - PENDING_RETENTION_MS) {
           delete this._data[id];
           changed = true;
         }

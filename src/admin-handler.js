@@ -129,7 +129,7 @@ class AdminHandler {
 
     if (!this._dryRun) {
       try {
-        this._mail.reply(messageId, replyBody, { bodyFormat: 'plain' });
+        await this._mail.reply(messageId, replyBody, { bodyFormat: 'plain' });
       } catch (err) {
         process.stderr.write(`[admin] Reply failed: ${err.message}\n`);
       }
@@ -195,7 +195,7 @@ class AdminHandler {
 
     for (const adminEmail of admins) {
       try {
-        this._mail.send(
+        await this._mail.send(
           adminEmail,
           `[Email Bridge] 访问控制巡检报告（${unreported.length} 封被拒绝邮件）`,
           body,

@@ -10,7 +10,8 @@
  *
  * 选项（邮件桥模式）：
  *   --config <path>     email-profiles.yaml 路径（默认 ./email-profiles.yaml）
- *   --interval <ms>     轮询间隔毫秒数（默认 900000 = 15分钟）
+ *   --interval <ms>     最大轮询间隔毫秒数（默认 900000 = 15分钟）
+ *   --no-adaptive       关闭自适应轮询（固定间隔）
  *   --dry-run           不实际发送邮件（调试）
  *
  * 选项（dashboard 模式）：
@@ -22,6 +23,7 @@
  *   PROFILES_CONFIG     等同 --config
  *   POLL_INTERVAL_MS    等同 --interval
  *   DRY_RUN=1           等同 --dry-run
+ *   ADAPTIVE_POLLING=0  等同 --no-adaptive
  */
 
 const path = require('path');
@@ -131,14 +133,16 @@ if (subcmd === 'dashboard') {
 
 // ── 邮件桥（默认）────────────────────────────────────────────────────────────
 
-const configArg   = getArg(subargs, '--config') || process.env.PROFILES_CONFIG;
-const intervalArg = getArg(subargs, '--interval') || process.env.POLL_INTERVAL_MS;
-const dryRunArg   = hasFlag(subargs, '--dry-run') || process.env.DRY_RUN === '1';
+const configArg      = getArg(subargs, '--config') || process.env.PROFILES_CONFIG;
+const intervalArg    = getArg(subargs, '--interval') || process.env.POLL_INTERVAL_MS;
+const dryRunArg      = hasFlag(subargs, '--dry-run') || process.env.DRY_RUN === '1';
+const noAdaptiveArg  = hasFlag(subargs, '--no-adaptive') || process.env.ADAPTIVE_POLLING === '0';
 
 const { createEmailBridge } = require('../src/index');
 
 createEmailBridge({
-  profilesConfig: configArg   ? path.resolve(configArg) : undefined,
-  pollIntervalMs: intervalArg ? parseInt(intervalArg, 10) : undefined,
-  dryRun:         dryRunArg,
+  profilesConfig:   configArg   ? path.resolve(configArg)  : undefined,
+  pollIntervalMs:   intervalArg ? parseInt(intervalArg, 10) : undefined,
+  adaptivePolling:  !noAdaptiveArg,
+  dryRun:           dryRunArg,
 });
