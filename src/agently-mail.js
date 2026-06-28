@@ -386,6 +386,10 @@ class AgentlyMailClient {
     const seenIds = new BoundedSet();
     let stopped = false;
     let timer = null;
+    // Exponential backoff state for 429 rate-limit responses.
+    // Resets to 0 on any successful poll; caps at 4 doublings (16× interval).
+    let backoffLevel = 0;
+    const BACKOFF_MAX = 4;
 
     const tick = async () => {
       if (stopped) return;
@@ -393,6 +397,12 @@ class AgentlyMailClient {
         const { messages } = this.list({ after: afterTimestamp, limit, dir: 'inbox' });
         // Sort ascending by created_at so we process oldest-first and advance cursor correctly
         messages.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+        // Successful poll — reset backoff
+        if (backoffLevel > 0) {
+          process.stderr.write(`[agently-mail] Rate limit cleared, resuming normal interval.\n`);
+          backoffLevel = 0;
+        }
 
         let latestTimestamp = afterTimestamp;
         for (const msg of messages) {
@@ -421,6 +431,16 @@ class AgentlyMailClient {
           if (saveCursor) saveCursor(afterTimestamp);
         }
       } catch (err) {
+        const isRateLimit = /429|rate.?limit/i.test(err?.message || '');
+        if (isRateLimit) {
+          backoffLevel = Math.min(backoffLevel + 1, BACKOFF_MAX);
+          const backoffMs = intervalMs * Math.pow(2, backoffLevel);
+          process.stderr.write(
+            `[agently-mail] Rate limited (429), backoff level ${backoffLevel}: next poll in ${Math.round(backoffMs / 1000)}s\n`,
+          );
+          if (!stopped) timer = setTimeout(tick, backoffMs);
+          return;
+        }
         process.stderr.write(
           `[agently-mail] poll error: ${err?.message || err}\n`,
         );

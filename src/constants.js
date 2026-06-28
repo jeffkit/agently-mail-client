@@ -27,8 +27,8 @@ const PENDING_RETRY_COOLDOWN_MS = 60_000;
 // 已回复邮件的本地保留时长（超出后 cleanup() 清理）。
 const PENDING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-// 默认轮询间隔。
-const DEFAULT_POLL_INTERVAL_MS = 300_000;
+// 默认轮询间隔（15 分钟）。
+const DEFAULT_POLL_INTERVAL_MS = 900_000;
 
 // 默认每轮 poll 拉取的邮件数。
 const DEFAULT_POLL_LIMIT = 20;

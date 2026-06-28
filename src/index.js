@@ -30,6 +30,9 @@ const { AdminHandler } = require('./admin-handler');
 const { BatchStore } = require('./batch-store');
 const { BatchHandler } = require('./batch-handler');
 const { matchesAny } = require('./sender-acl');
+const { DEFAULT_POLL_INTERVAL_MS } = require('./constants');
+const { ScheduleRunner } = require('./schedule-runner');
+const builtinHandlers = require('./builtin-handlers');
 
 // Re-export createProfile from agentproc (AgentProc P0 protocol)
 const { createProfile: _createProfile } = require('agentproc');
@@ -98,12 +101,16 @@ function createEmailBridge(options = {}) {
       const candidate = path.join(process.cwd(), 'email-acl.yaml');
       return fs.existsSync(candidate) ? candidate : null;
     })(),
-    pollIntervalMs = 300_000,
+    pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
     dryRun = process.env.DRY_RUN === '1',
     limit = 20,
     filterSelfSent = true,
     pendingStoreFile,
     batchStoreFile,
+    schedulesConfig: schedulesConfigFile = (() => {
+      const candidate = path.join(process.cwd(), 'email-schedules.yaml');
+      return fs.existsSync(candidate) ? candidate : path.join(process.cwd(), 'email-schedules.yaml');
+    })(),
   } = options;
 
   // Cursor file lives alongside the pending store for persistence across restarts
@@ -478,12 +485,23 @@ function createEmailBridge(options = {}) {
     );
   }
 
+  // Start scheduled tasks
+  const scheduleRunner = new ScheduleRunner({
+    configPath: schedulesConfigFile,
+    dispatcher,
+    mailClient: mail,
+    builtinHandlers,
+    dryRun,
+  });
+  scheduleRunner.start();
+
   // Graceful shutdown
   const stop = () => {
     poller.stop();
     admin.stopReportScheduler();
     if (batchHandler) batchHandler.stop();
     if (retryTimer) clearInterval(retryTimer);
+    scheduleRunner.stop();
   };
   process.on('SIGINT', () => {
     process.stderr.write('\n[email-bridge] Stopping...\n');

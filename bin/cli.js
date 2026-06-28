@@ -10,7 +10,7 @@
  *
  * 选项（邮件桥模式）：
  *   --config <path>     email-profiles.yaml 路径（默认 ./email-profiles.yaml）
- *   --interval <ms>     轮询间隔毫秒数（默认 300000 = 5分钟）
+ *   --interval <ms>     轮询间隔毫秒数（默认 900000 = 15分钟）
  *   --dry-run           不实际发送邮件（调试）
  *
  * 选项（dashboard 模式）：
@@ -50,7 +50,7 @@ Usage:
 
 Bridge options:
   --config <path>    Path to email-profiles.yaml (default: ./email-profiles.yaml)
-  --interval <ms>    Poll interval in milliseconds (default: 300000)
+  --interval <ms>    Poll interval in milliseconds (default: 900000)
   --dry-run          Print would-be replies without sending
   -h, --help         Show this help
 
@@ -76,8 +76,9 @@ if (subcmd === 'init') {
   const pkgDir   = path.resolve(__dirname, '..');
   const destDir  = process.cwd();
   const files = [
-    { src: 'email-profiles.example.yaml', dest: 'email-profiles.yaml' },
-    { src: 'email-acl.example.yaml',      dest: 'email-acl.yaml'      },
+    { src: 'email-profiles.example.yaml',   dest: 'email-profiles.yaml'   },
+    { src: 'email-acl.example.yaml',        dest: 'email-acl.yaml'        },
+    { src: 'email-schedules.example.yaml',  dest: 'email-schedules.yaml'  },
   ];
 
   let anyWritten = false;

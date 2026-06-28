@@ -576,6 +576,33 @@ class ProfileDispatcher {
     return sid;
   }
 
+  /**
+   * Dispatch a raw message directly to a named profile, bypassing email-specific
+   * context (sender, subject, thread). Used by ScheduleRunner for cron tasks.
+   *
+   * @param {string} profileName
+   * @param {string} message        AGENT_MESSAGE content
+   * @param {string} [sessionId=''] Stable session id for conversation continuity
+   * @param {boolean} [dryRun=false]
+   * @returns {Promise<{ response: string, profileName: string }>}
+   */
+  async dispatchRaw(profileName, message, sessionId = '', dryRun = false) {
+    const cfg = this.config.profiles[profileName];
+    if (!cfg) throw new Error(`Profile "${profileName}" not found`);
+
+    const { response, newSessionId } = await this._spawnProfile(
+      cfg, message, sessionId, `schedule-${profileName}`, '', dryRun, profileName, 'scheduled',
+    );
+
+    appendHistory(sessionId || `schedule_${profileName}`, [
+      { role: 'user', content: message },
+      { role: 'assistant', content: response },
+    ]);
+    saveAgentSessionId(sessionId || `schedule_${profileName}`, newSessionId);
+
+    return { response, profileName };
+  }
+
   /** @private */
   async _spawnProfile(cfg, message, sessionId, sessionName, fromUser, dryRun, profileName, messageId) {
     if (dryRun) {
