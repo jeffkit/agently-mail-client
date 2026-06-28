@@ -1,8 +1,8 @@
 class AgentlyMailClient < Formula
   desc "Email Channel Adapter — routes emails to AI CLI profiles via AgentProc P0 protocol"
   homepage "https://github.com/jeffkit/agently-mail-client"
-  url "https://registry.npmjs.org/agently-mail-client/-/agently-mail-client-0.1.0.tgz"
-  sha256 "9c8708ffa4edab2083f0400cf7c58ee70596b5e48bb3494e51a81aa18b1adb7a"
+  url "https://registry.npmjs.org/agently-mail-client/-/agently-mail-client-0.2.0.tgz"
+  sha256 "92a5503bacff269f1fe081b5ab3e7dc09fc228ca4dff8a55e97d380c28c32e4c"
   license "MIT"
 
   depends_on "node"
