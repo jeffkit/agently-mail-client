@@ -11,7 +11,7 @@ cases:
       headers:
         content-type: { contains: "application/json" }
 
-  - name: Account info has aliases array
+  - name: Account info directly contains aliases array
     request:
       method: GET
       url: http://127.0.0.1:3030/api/me
@@ -20,7 +20,7 @@ cases:
       body:
         aliases: { exists: true }
 
-  - name: Aliases contain valid email addresses
+  - name: Aliases contain valid email and alias_id fields
     request:
       method: GET
       url: http://127.0.0.1:3030/api/me

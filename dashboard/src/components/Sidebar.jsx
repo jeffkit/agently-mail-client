@@ -42,7 +42,7 @@ function NavItem({ to, icon: Icon, label }) {
 
 function AccountBadge() {
   const { data, isLoading } = useMe();
-  const primary = data?.data?.aliases?.find(a => a.is_primary) || data?.data?.aliases?.[0];
+  const primary = data?.aliases?.find(a => a.is_primary) || data?.aliases?.[0];
 
   if (isLoading) return (
     <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>

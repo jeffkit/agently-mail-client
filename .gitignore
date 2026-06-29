@@ -6,3 +6,5 @@ node_modules/
 email-profiles.yaml
 email-acl.yaml
 src/dashboard-dist/
+.playwright-mcp/
+screenshots/
