@@ -1,0 +1,106 @@
+name: Profile Management API
+sequential: true
+
+teardown:
+  - name: Cleanup e2e test profile
+    request:
+      method: DELETE
+      url: http://127.0.0.1:3030/api/profiles/e2e-test-profile
+    ignoreError: true
+
+cases:
+  - name: POST /api/profiles - create new test profile
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/profiles
+      headers:
+        content-type: application/json
+      body:
+        name: e2e-test-profile
+        trigger: e2etest
+        command: node
+        args: ["./profiles/echo.js"]
+        description: E2E test profile
+    expect:
+      status: 200
+      body:
+        ok: true
+
+  - name: GET /api/state - new profile appears in list
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        profiles:
+          some:
+            name: e2e-test-profile
+
+  - name: POST /api/profiles - update existing profile description
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/profiles
+      headers:
+        content-type: application/json
+      body:
+        name: e2e-test-profile
+        trigger: e2etest
+        command: node
+        args: ["./profiles/echo.js"]
+        description: E2E test profile (updated)
+        timeout_ms: 30000
+    expect:
+      status: 200
+      body:
+        ok: true
+
+  - name: POST /api/profiles - missing name returns 400
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/profiles
+      headers:
+        content-type: application/json
+      body:
+        command: node
+        args: ["./profiles/echo.js"]
+    expect:
+      status: 400
+
+  - name: POST /api/profiles - missing command returns 400
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/profiles
+      headers:
+        content-type: application/json
+      body:
+        name: incomplete-profile
+    expect:
+      status: 400
+
+  - name: DELETE /api/profiles/:name - delete test profile
+    request:
+      method: DELETE
+      url: http://127.0.0.1:3030/api/profiles/e2e-test-profile
+    expect:
+      status: 200
+      body:
+        ok: true
+
+  - name: GET /api/state - deleted profile no longer in list
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        profiles:
+          every:
+            name: { not: "e2e-test-profile" }
+
+  - name: DELETE /api/profiles/:name - nonexistent profile returns error
+    request:
+      method: DELETE
+      url: http://127.0.0.1:3030/api/profiles/nonexistent-profile-xyz
+    expect:
+      status: 400

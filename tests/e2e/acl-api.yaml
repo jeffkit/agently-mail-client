@@ -1,0 +1,114 @@
+name: ACL Management API
+sequential: true
+
+teardown:
+  - name: Cleanup allow test address
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/acl
+      headers:
+        content-type: application/json
+      body:
+        action: reset
+        address: e2e-test@example.com
+    ignoreError: true
+
+  - name: Cleanup deny test address
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/acl
+      headers:
+        content-type: application/json
+      body:
+        action: reset
+        address: e2e-deny@example.com
+    ignoreError: true
+
+cases:
+  - name: POST /api/acl - allow valid email succeeds
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/acl
+      headers:
+        content-type: application/json
+      body:
+        action: allow
+        address: e2e-test@example.com
+    expect:
+      status: 200
+      body:
+        ok: true
+
+  - name: GET /api/state - allowed address appears in dynamic ACL
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        acl:
+          dynamic:
+            allowed:
+              some: e2e-test@example.com
+
+  - name: POST /api/acl - deny valid email succeeds
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/acl
+      headers:
+        content-type: application/json
+      body:
+        action: deny
+        address: e2e-deny@example.com
+    expect:
+      status: 200
+      body:
+        ok: true
+
+  - name: GET /api/state - denied address appears in dynamic ACL
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        acl:
+          dynamic:
+            denied:
+              some: e2e-deny@example.com
+
+  - name: POST /api/acl - reset clears allow entry
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/acl
+      headers:
+        content-type: application/json
+      body:
+        action: reset
+        address: e2e-test@example.com
+    expect:
+      status: 200
+      body:
+        ok: true
+
+  - name: POST /api/acl - missing action returns 400
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/acl
+      headers:
+        content-type: application/json
+      body:
+        address: someone@example.com
+    expect:
+      status: 400
+
+  - name: POST /api/acl - missing address returns 400
+    request:
+      method: POST
+      url: http://127.0.0.1:3030/api/acl
+      headers:
+        content-type: application/json
+      body:
+        action: allow
+    expect:
+      status: 400

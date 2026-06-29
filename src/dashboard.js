@@ -744,6 +744,21 @@ function deleteProfileFromYaml(name, opts = {}) {
 // Determine the static frontend dist directory (built React app)
 const DIST_DIR = path.resolve(__dirname, 'dashboard-dist');
 
+// Lazily-loaded and cached account info (calls agently-cli +me once per process)
+let _meCache = null;
+async function getAccountInfo() {
+  if (_meCache) return _meCache;
+  try {
+    const { AgentlyMailClient } = require('./agently-mail');
+    const client = new AgentlyMailClient();
+    const info = await client.me();
+    _meCache = info;
+    return info;
+  } catch {
+    return null;
+  }
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js':   'application/javascript; charset=utf-8',
@@ -801,6 +816,12 @@ function startDashboard(opts = {}) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
         }
+        return;
+      }
+      if (req.url === '/api/me') {
+        const info = await getAccountInfo();
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify(info || {}));
         return;
       }
       // Static files (React SPA)

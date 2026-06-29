@@ -1,7 +1,6 @@
-'use strict';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
-const BASE = '';  // same-origin, or proxy in dev
+const BASE = '';  // same-origin, or proxied in dev
 
 async function apiFetch(path, opts = {}) {
   const res = await fetch(BASE + path, {
@@ -21,6 +20,15 @@ export function useState() {
     queryFn: () => apiFetch('/api/state'),
     refetchInterval: 15_000,
     staleTime: 5_000,
+  });
+}
+
+export function useMe() {
+  return useQuery({
+    queryKey: ['me'],
+    queryFn: () => apiFetch('/api/me'),
+    staleTime: 60_000,      // account info rarely changes
+    retry: 1,
   });
 }
 

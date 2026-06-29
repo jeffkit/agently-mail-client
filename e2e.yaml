@@ -1,0 +1,39 @@
+version: "1"
+project:
+  name: agently-mail-dashboard
+
+# Test-only mode: the dashboard is already running externally (via launchd)
+# Run with: argusai run
+resilience:
+  preflight:
+    enabled: false
+
+history:
+  enabled: true
+  storage: local
+  retention:
+    maxAge: "90d"
+    maxRuns: 500
+  flakyWindow: 10
+
+tests:
+  suites:
+    - name: Dashboard Health
+      id: health
+      file: tests/e2e/health.yaml
+
+    - name: State API
+      id: state-api
+      file: tests/e2e/state-api.yaml
+
+    - name: Account Info
+      id: account-api
+      file: tests/e2e/account-api.yaml
+
+    - name: ACL Management
+      id: acl-api
+      file: tests/e2e/acl-api.yaml
+
+    - name: Profile Management
+      id: profiles-api
+      file: tests/e2e/profiles-api.yaml

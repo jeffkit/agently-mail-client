@@ -1,7 +1,9 @@
 import { NavLink } from 'react-router-dom';
 import {
-  LayoutDashboard, Mail, Users, ShieldCheck, Clock, Ban, Settings
+  LayoutDashboard, Mail, Users, ShieldCheck, Clock, Ban,
 } from 'lucide-react';
+import { useMe } from '../hooks/useApi';
+
 const NAV = [
   { to: '/',         icon: LayoutDashboard, label: '概览' },
   { to: '/history',  icon: Mail,            label: '邮件历史' },
@@ -10,52 +12,6 @@ const NAV = [
   { to: '/queue',    icon: Clock,           label: '批处理队列' },
   { to: '/denied',   icon: Ban,             label: '拦截记录' },
 ];
-
-const css = {
-  nav: {
-    width: 'var(--sidebar-w)',
-    background: 'var(--bg-panel)',
-    borderRight: '1px solid var(--border)',
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100vh',
-    position: 'sticky',
-    top: 0,
-    flexShrink: 0,
-    overflow: 'hidden',
-  },
-  logo: {
-    padding: '20px 20px 16px',
-    borderBottom: '1px solid var(--border-subtle)',
-  },
-  logoTitle: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: 'var(--text)',
-    letterSpacing: '0.02em',
-  },
-  logoSub: {
-    fontSize: 11,
-    color: 'var(--text-dim)',
-    marginTop: 2,
-    fontFamily: 'var(--font-mono)',
-  },
-  list: {
-    flex: 1,
-    padding: '10px 10px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 2,
-    overflowY: 'auto',
-  },
-  footer: {
-    padding: '12px 16px',
-    borderTop: '1px solid var(--border-subtle)',
-    fontSize: 11,
-    color: 'var(--text-dim)',
-    fontFamily: 'var(--font-mono)',
-  },
-};
 
 function NavItem({ to, icon: Icon, label }) {
   return (
@@ -74,7 +30,8 @@ function NavItem({ to, icon: Icon, label }) {
         background: isActive ? 'var(--bg-hover)' : 'transparent',
         textDecoration: 'none',
         transition: 'all 0.1s',
-        boxShadow: isActive ? 'inset 2px 0 0 var(--accent)' : 'none',
+        borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+        paddingLeft: isActive ? 10 : 12,
       })}
     >
       <Icon size={15} strokeWidth={1.8} />
@@ -83,18 +40,97 @@ function NavItem({ to, icon: Icon, label }) {
   );
 }
 
-export function Sidebar({ pollAt }) {
-  const now = pollAt ? new Date(pollAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—';
+function AccountBadge() {
+  const { data, isLoading } = useMe();
+  const primary = data?.data?.aliases?.find(a => a.is_primary) || data?.data?.aliases?.[0];
+
+  if (isLoading) return (
+    <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+      <div style={{ height: 12, width: 100, background: 'var(--border)', borderRadius: 4 }} />
+    </div>
+  );
+
+  if (!primary) return (
+    <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', fontSize: 11, color: 'var(--text-dim)' }}>
+      未登录账号
+    </div>
+  );
+
   return (
-    <nav style={css.nav}>
-      <div style={css.logo}>
-        <div style={css.logoTitle}>✉ Agently Mail</div>
-        <div style={css.logoSub}>email channel adapter</div>
+    <div style={{
+      padding: '12px 16px',
+      borderBottom: '1px solid var(--border-subtle)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+    }}>
+      {/* Avatar */}
+      <div style={{
+        width: 32, height: 32, borderRadius: '50%',
+        background: 'linear-gradient(135deg, var(--accent), #7c3aed)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0,
+        letterSpacing: '-0.02em',
+      }}>
+        {(primary.name || primary.email || '?')[0].toUpperCase()}
       </div>
-      <div style={css.list}>
+      <div style={{ overflow: 'hidden' }}>
+        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {primary.name || primary.email}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {primary.email}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Sidebar({ pollAt }) {
+  const now = pollAt
+    ? new Date(pollAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    : '—';
+
+  return (
+    <nav style={{
+      width: 'var(--sidebar-w)',
+      background: 'var(--bg-panel)',
+      borderRight: '1px solid var(--border)',
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100vh',
+      position: 'sticky',
+      top: 0,
+      flexShrink: 0,
+      overflow: 'hidden',
+    }}>
+      {/* Logo */}
+      <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 18 }}>✉</span>
+          Agently Mail
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2, fontFamily: 'var(--font-mono)', letterSpacing: '0.05em' }}>
+          EMAIL CHANNEL ADAPTER
+        </div>
+      </div>
+
+      {/* Account info */}
+      <AccountBadge />
+
+      {/* Navigation */}
+      <div style={{ flex: 1, padding: '10px 10px', display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto' }}>
         {NAV.map(item => <NavItem key={item.to} {...item} />)}
       </div>
-      <div style={css.footer}>
+
+      {/* Footer */}
+      <div style={{
+        padding: '10px 16px',
+        borderTop: '1px solid var(--border-subtle)',
+        fontSize: 11,
+        color: 'var(--text-dim)',
+        fontFamily: 'var(--font-mono)',
+      }}>
         上次轮询 {now}
       </div>
     </nav>

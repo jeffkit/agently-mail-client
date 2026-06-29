@@ -1,0 +1,30 @@
+name: Dashboard Health
+sequential: true
+
+cases:
+  - name: HTML shell responds 200
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/
+    expect:
+      status: 200
+      headers:
+        content-type: { contains: "text/html" }
+
+  - name: Unknown SPA route falls back to index.html
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/profiles
+    expect:
+      status: 200
+      headers:
+        content-type: { contains: "text/html" }
+
+  - name: API state endpoint is reachable
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      headers:
+        content-type: { contains: "application/json" }

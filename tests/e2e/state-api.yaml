@@ -1,0 +1,71 @@
+name: State API
+sequential: true
+
+cases:
+  - name: GET /api/state returns valid JSON
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      headers:
+        content-type: { contains: "application/json" }
+      body:
+        timestamp: { exists: true }
+        profiles: { exists: true }
+        pending: { exists: true }
+        batch: { exists: true }
+        denied: { exists: true }
+        acl: { exists: true }
+
+  - name: profiles array is non-empty
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        profiles: { length: { gte: 1 } }
+
+  - name: profiles items have required fields
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        profiles:
+          every:
+            name: { exists: true }
+            command: { exists: true }
+
+  - name: pending has queued and entries fields
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        pending:
+          queued: { type: number }
+          entries: { exists: true }
+
+  - name: acl has static and dynamic sections
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        acl:
+          static: { exists: true }
+          dynamic: { exists: true }
+
+  - name: lastPollAt is a timestamp string
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/state
+    expect:
+      status: 200
+      body:
+        lastPollAt: { type: string }

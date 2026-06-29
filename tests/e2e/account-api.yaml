@@ -1,0 +1,44 @@
+name: Account Info API
+sequential: true
+
+cases:
+  - name: GET /api/me returns 200
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/me
+    expect:
+      status: 200
+      headers:
+        content-type: { contains: "application/json" }
+
+  - name: Account info has aliases array
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/me
+    expect:
+      status: 200
+      body:
+        aliases: { exists: true }
+
+  - name: Aliases contain valid email addresses
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/me
+    expect:
+      status: 200
+      body:
+        aliases:
+          every:
+            email: { exists: true }
+            alias_id: { exists: true }
+
+  - name: At least one alias is primary
+    request:
+      method: GET
+      url: http://127.0.0.1:3030/api/me
+    expect:
+      status: 200
+      body:
+        aliases:
+          some:
+            is_primary: true
