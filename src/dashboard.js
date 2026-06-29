@@ -741,15 +741,58 @@ function deleteProfileFromYaml(name, opts = {}) {
  * @param {boolean} [opts.open=true]   自动打开浏览器
  * @returns {{ server: http.Server, stop: () => void }}
  */
+// Determine the static frontend dist directory (built React app)
+const DIST_DIR = path.resolve(__dirname, 'dashboard-dist');
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js':   'application/javascript; charset=utf-8',
+  '.css':  'text/css; charset=utf-8',
+  '.svg':  'image/svg+xml',
+  '.ico':  'image/x-icon',
+  '.png':  'image/png',
+  '.woff2':'font/woff2',
+  '.woff': 'font/woff',
+};
+
+function serveStatic(urlPath, res) {
+  // Security: prevent path traversal
+  const safe = urlPath.replace(/\.\./g, '').replace(/^\/+/, '');
+  const file = path.join(DIST_DIR, safe || 'index.html');
+  // Resolve the file, fallback to index.html for SPA routing
+  let target = file;
+  if (!fs.existsSync(target) || fs.statSync(target).isDirectory()) {
+    target = path.join(DIST_DIR, 'index.html');
+  }
+  // Ensure target is inside DIST_DIR (belt-and-suspenders)
+  if (!target.startsWith(DIST_DIR + path.sep) && target !== path.join(DIST_DIR, 'index.html')) {
+    res.writeHead(403); res.end(); return;
+  }
+  try {
+    const ext = path.extname(target);
+    const mime = MIME[ext] || 'application/octet-stream';
+    const content = fs.readFileSync(target);
+    res.writeHead(200, { 'Content-Type': mime });
+    res.end(content);
+  } catch {
+    res.writeHead(404); res.end('Not Found');
+  }
+}
+
 function startDashboard(opts = {}) {
   const port = opts.port || 3030;
   const host = opts.host || '127.0.0.1';
-  const html = buildHtml();
 
   const server = http.createServer(async (req, res) => {
+    // CORS headers for local dev
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
     // ── GET endpoints ──
     if (req.method === 'GET') {
-      if (req.url === '/api/state') {
+      if (req.url === '/api/state' || req.url?.startsWith('/api/state?')) {
         try {
           const state = readState(opts);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -760,9 +803,8 @@ function startDashboard(opts = {}) {
         }
         return;
       }
-      // All other GET → HTML panel
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(html);
+      // Static files (React SPA)
+      serveStatic(req.url, res);
       return;
     }
 

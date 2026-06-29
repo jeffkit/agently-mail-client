@@ -9,6 +9,9 @@
   },
   "scripts": {
     "start": "node bin/cli.js",
+    "dashboard": "node bin/cli.js dashboard",
+    "dashboard:dev": "cd dashboard && pnpm dev",
+    "dashboard:build": "cd dashboard && pnpm build",
     "test": "node --test tests/test-sender-acl.js tests/test-acl-system.js tests/test-dispatcher-clean.js",
     "test:manual": "node tests/test-html-conversion.js && node tests/test-integration.js",
     "docs:dev": "vitepress dev docs",

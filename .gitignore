@@ -5,3 +5,4 @@ node_modules/
 # Personal config (copy from *.example.yaml)
 email-profiles.yaml
 email-acl.yaml
+src/dashboard-dist/
