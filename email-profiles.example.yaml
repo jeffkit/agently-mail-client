@@ -53,13 +53,35 @@ profiles:
   # 内置 Coding Agent CLI Profiles
   # ──────────────────────────────────────
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # 同一个 AI CLI 可以定义多个 Profile，每个绑定不同 workdir / trigger / prompt
+  #
+  # 示例：两个 Claude，分别对应不同项目（主题写 [proj-a] 或 [proj-b]）
+  #
+  # proj-a:
+  #   command: node
+  #   args: [./profiles/claude-code.js]
+  #   trigger: proj-a
+  #   workdir: /Users/me/projects/project-a   # Claude 在此目录运行
+  #   system_prompt: "You are a Claude assistant for Project A."
+  #   timeout_ms: 600000
+  #
+  # proj-b:
+  #   command: node
+  #   args: [./profiles/claude-code.js]
+  #   trigger: proj-b
+  #   workdir: ../project-b                   # 相对于本 yaml 目录
+  # ────────────────────────────────────────────────────────────────────────────
+
   claude-code:
     command: node
     args:
       - ./profiles/claude-code.js   # Claude Code CLI (claude)
     description: Claude Code AI 助手（默认）
     trigger: claude
-    # 可选 env: CLAUDE_MODEL=claude-opus-4-5
+    # workdir: /Users/me/projects/my-project  # 可选：指定工作目录
+    # timeout_ms: 600000                       # 可选：超时毫秒数（默认 300000）
+    # system_prompt: "You are a coding assistant."  # 可选：覆盖默认提示词
 
   cursor:
     command: node

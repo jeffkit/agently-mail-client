@@ -131,10 +131,14 @@ function readState(opts = {}) {
     lastPollAt,
     profiles: Object.entries(profiles).map(([name, cfg]) => ({
       name,
-      trigger: cfg.trigger || name,
-      description: cfg.description || '',
-      command: cfg.command,
-      isDefault: name === defaultProfile,
+      trigger:      cfg.trigger || name,
+      description:  cfg.description || '',
+      command:      cfg.command,
+      args:         cfg.args || [],
+      workdir:      cfg.workdir || null,
+      timeout_ms:   cfg.timeout_ms || null,
+      system_prompt: cfg.system_prompt || null,
+      isDefault:    name === defaultProfile,
     })),
     acl: { static: aclStatic, dynamic: aclDynamic },
     pending,
@@ -210,6 +214,9 @@ function buildHtml() {
   .btn-red   { background: #fee2e2; color: var(--red); }
   .btn-gray  { background: #f3f4f6; color: var(--muted); }
   .btn-icon  { padding: 3px 8px; font-size: 11px; border-radius: 4px; }
+  .input-field { width:100%;padding:7px 10px;border:1px solid var(--border);
+                 border-radius:6px;font-size:13px;outline:none;box-sizing:border-box; }
+  .input-field:focus { border-color:var(--accent); }
 </style>
 </head>
 <body>
@@ -239,10 +246,58 @@ function buildHtml() {
 
   <!-- Profile 路由 -->
   <div class="card">
-    <div class="card-header"><h2>🔀 Profile 路由</h2></div>
+    <div class="card-header">
+      <h2>🔀 Profile 路由</h2>
+      <button class="btn btn-green" style="margin-left:auto;font-size:12px;padding:4px 10px"
+              onclick="openProfileEditor(null)">+ 添加 Profile</button>
+    </div>
     <div class="card-body">
-      <table><thead><tr><th>名称</th><th>触发前缀</th><th>命令</th></tr></thead>
-      <tbody id="profiles-tbody"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody></table>
+      <table><thead><tr><th>名称</th><th>触发前缀</th><th>命令</th><th>工作目录</th><th></th></tr></thead>
+      <tbody id="profiles-tbody"><tr><td colspan="5" class="empty">加载中…</td></tr></tbody></table>
+    </div>
+  </div>
+
+  <!-- Profile 编辑弹窗 -->
+  <div id="profile-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;
+       display:flex;align-items:center;justify-content:center;display:none">
+    <div style="background:#fff;border-radius:12px;padding:24px;width:500px;max-width:95vw;
+                box-shadow:0 8px 32px rgba(0,0,0,.18);max-height:90vh;overflow-y:auto">
+      <h3 style="margin-bottom:16px;font-size:16px" id="modal-title">添加 Profile</h3>
+      <div style="display:grid;gap:10px">
+        <label style="font-size:13px;font-weight:500">Profile 名称（唯一 ID）
+          <input id="pf-name" placeholder="my-claude-project" class="input-field" style="margin-top:4px"/>
+        </label>
+        <label style="font-size:13px;font-weight:500">触发前缀（邮件主题 [tag]）
+          <input id="pf-trigger" placeholder="claude" class="input-field" style="margin-top:4px"/>
+        </label>
+        <label style="font-size:13px;font-weight:500">命令（command）
+          <input id="pf-command" placeholder="claude" class="input-field" style="margin-top:4px"/>
+        </label>
+        <label style="font-size:13px;font-weight:500">参数（args，每行一个）
+          <textarea id="pf-args" rows="3" placeholder="--dangerously-skip-permissions" class="input-field"
+                    style="margin-top:4px;resize:vertical;font-family:monospace"></textarea>
+        </label>
+        <label style="font-size:13px;font-weight:500">工作目录（workdir，可选）
+          <input id="pf-workdir" placeholder="/Users/me/projects/my-project" class="input-field" style="margin-top:4px"/>
+        </label>
+        <label style="font-size:13px;font-weight:500">描述（可选）
+          <input id="pf-desc" placeholder="My Claude profile" class="input-field" style="margin-top:4px"/>
+        </label>
+        <label style="font-size:13px;font-weight:500">超时 ms（timeout_ms，可选，默认 300000）
+          <input id="pf-timeout" placeholder="300000" type="number" class="input-field" style="margin-top:4px"/>
+        </label>
+        <label style="font-size:13px;font-weight:500">System Prompt（可选）
+          <textarea id="pf-prompt" rows="2" class="input-field"
+                    style="margin-top:4px;resize:vertical;font-size:12px"
+                    placeholder="You are a helpful assistant for Project X."></textarea>
+        </label>
+      </div>
+      <div id="modal-msg" style="font-size:12px;color:var(--red);margin-top:8px;min-height:16px"></div>
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+        <button class="btn btn-gray" onclick="closeProfileModal()">取消</button>
+        <button id="modal-delete-btn" class="btn btn-red" style="display:none" onclick="deleteProfile()">删除</button>
+        <button class="btn btn-green" onclick="saveProfile()">保存</button>
+      </div>
     </div>
   </div>
 
@@ -302,18 +357,20 @@ function buildHtml() {
 </main>
 
 <script>
+// HTML-escape user-supplied strings to prevent XSS
+const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const fmt = (iso) => iso ? new Date(iso).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'}) : '-';
 const statusTag = (s) => {
   const m = { replied:'<span class="tag tag-green">已回复</span>',
               queued: '<span class="tag tag-yellow">等待中</span>',
               skipped:'<span class="tag tag-gray">已跳过</span>',
               failed: '<span class="tag tag-red">失败</span>' };
-  return m[s] || \`<span class="tag tag-gray">\${s}</span>\`;
+  return m[s] || \`<span class="tag tag-gray">\${esc(s)}</span>\`;
 };
 
 function renderChips(arr) {
   if (!arr || !arr.length) return '<span style="color:var(--muted);font-size:12px">（无）</span>';
-  return arr.map(a => \`<span class="chip">\${a}</span>\`).join('');
+  return arr.map(a => \`<span class="chip">\${esc(a)}</span>\`).join('');
 }
 
 function render(state) {
@@ -328,14 +385,18 @@ function render(state) {
   // Profiles
   const pb = document.getElementById('profiles-tbody');
   if (!state.profiles.length) {
-    pb.innerHTML = '<tr><td colspan="3" class="empty">未找到 Profile 配置</td></tr>';
+    pb.innerHTML = '<tr><td colspan="5" class="empty">未找到 Profile 配置</td></tr>';
   } else {
     pb.innerHTML = state.profiles.map(p =>
-      \`<tr><td>\${p.name}\${p.isDefault ? ' <span class="tag tag-blue">默认</span>' : ''}</td>
-           <td><code>[\${p.trigger}]</code></td>
-           <td style="color:var(--muted)">\${p.command}</td></tr>\`
+      \`<tr><td>\${esc(p.name)}\${p.isDefault ? ' <span class="tag tag-blue">默认</span>' : ''}</td>
+           <td><code>[\${esc(p.trigger)}]</code></td>
+           <td style="color:var(--muted)">\${esc(p.command)}</td>
+           <td style="color:var(--muted);font-size:12px;max-width:180px;overflow:hidden;text-overflow:ellipsis" title="\${esc(p.workdir||'')}">\${p.workdir ? esc(p.workdir) : '<span style="opacity:.4">—</span>'}</td>
+           <td><button class="btn btn-gray btn-icon" onclick='openProfileEditor(\${esc(JSON.stringify(p))})'>编辑</button></td></tr>\`
     ).join('');
   }
+  // Cache full profile list for the editor
+  window._profilesState = state.profiles;
 
   // ACL
   const acl = state.acl;
@@ -354,7 +415,7 @@ function render(state) {
     <div class="section-label">动态黑名单（/deny 指令）</div>
     \${renderChips(acl.dynamic.denied)}
     <div class="section-label">拒绝动作</div>
-    <span class="chip">\${acl.static.denyAction || 'silent'}</span>
+    <span class="chip">\${esc(acl.static.denyAction || 'silent')}</span>
   \`;
 
   // 批处理队列
@@ -365,8 +426,8 @@ function render(state) {
     bb.innerHTML = '<tr><td colspan="4" class="empty">无待处理邮件</td></tr>';
   } else {
     bb.innerHTML = batchEntries.map(e =>
-      \`<tr><td>\${e.from_name ? e.from_name + '<br><small style="color:var(--muted)">' + e.from_email + '</small>' : e.from_email}</td>
-           <td>\${e.subject || '-'}</td>
+      \`<tr><td>\${e.from_name ? esc(e.from_name) + '<br><small style="color:var(--muted)">' + esc(e.from_email) + '</small>' : esc(e.from_email)}</td>
+           <td>\${esc(e.subject || '-')}</td>
            <td style="color:var(--muted);font-size:12px">\${fmt(e.queued_at)}</td>
            <td>\${statusTag(e.status)}</td></tr>\`
     ).join('');
@@ -380,11 +441,13 @@ function render(state) {
     hb.innerHTML = '<tr><td colspan="5" class="empty">暂无记录</td></tr>';
   } else {
     hb.innerHTML = hist.map(e =>
-      \`<tr><td>\${e.from_name || e.from_email}</td>
-           <td>\${e.subject || '-'}\${e.last_error ? '<br><small style="color:var(--red);font-size:11px">' + e.last_error.slice(0,80) + '</small>' : ''}</td>
+      \`<tr><td>\${esc(e.from_name || e.from_email)}</td>
+           <td>\${esc(e.subject || '-')}\${e.last_error ? '<br><small style="color:var(--red);font-size:11px">' + esc(e.last_error.slice(0,80)) + '</small>' : ''}</td>
            <td style="color:var(--muted);font-size:12px">\${fmt(e.added_at)}</td>
-           <td>\${statusTag(e.replied ? 'replied' : (e.retries > 0 ? 'failed' : 'queued'))}</td>
-           <td>\${!e.replied ? \`<button class="btn btn-gray btn-icon" onclick="discardPending('\${e.message_id}')">丢弃</button>\` : ''}</td></tr>\`
+           <td>\${e.replied && e.retries > 0
+                  ? '<span class="tag tag-green">已回复<span style="opacity:.6;font-size:10px"> ↩重试后</span></span>'
+                  : statusTag(e.replied ? 'replied' : (e.retries > 0 ? 'failed' : 'queued'))}</td>
+           <td>\${!e.replied ? \`<button class="btn btn-gray btn-icon" onclick="discardPending('\${esc(e.message_id)}')">丢弃</button>\` : ''}</td></tr>\`
     ).join('');
   }
 
@@ -396,10 +459,10 @@ function render(state) {
     db.innerHTML = '<tr><td colspan="5" class="empty">暂无拦截记录</td></tr>';
   } else {
     db.innerHTML = dlist.map(e =>
-      \`<tr><td>\${e.from_name ? e.from_name + '<br><small style="color:var(--muted)">' + e.from_email + '</small>' : e.from_email}</td>
-           <td>\${e.subject || '-'}</td>
+      \`<tr><td>\${e.from_name ? esc(e.from_name) + '<br><small style="color:var(--muted)">' + esc(e.from_email) + '</small>' : esc(e.from_email)}</td>
+           <td>\${esc(e.subject || '-')}</td>
            <td style="color:var(--muted);font-size:12px">\${fmt(e.received_at)}</td>
-           <td>\${e.reason || '-'}</td>
+           <td>\${esc(e.reason || '-')}</td>
            <td>\${e.reported ? '<span class="tag tag-green">已上报</span>' : '<span class="tag tag-yellow">未上报</span>'}</td></tr>\`
     ).join('');
   }
@@ -437,6 +500,78 @@ async function aclAction(action) {
       msg.style.color = 'var(--red)';
     }
   } catch(e) { msg.textContent = '请求失败: ' + e.message; msg.style.color='var(--red)'; }
+}
+
+// ── Profile Editor ────────────────────────────────────────────────────────────
+let _editingProfile = null;
+
+function openProfileEditor(profile) {
+  _editingProfile = profile;
+  document.getElementById('modal-title').textContent = profile ? '编辑 Profile' : '添加 Profile';
+  document.getElementById('pf-name').value    = profile?.name    || '';
+  document.getElementById('pf-name').disabled = !!profile;  // name is the key, can't rename
+  document.getElementById('pf-trigger').value  = profile?.trigger || '';
+  document.getElementById('pf-command').value  = profile?.command || '';
+  document.getElementById('pf-args').value     = (profile?.args || []).join('\\n');
+  document.getElementById('pf-workdir').value  = profile?.workdir || '';
+  document.getElementById('pf-desc').value     = profile?.description || '';
+  document.getElementById('pf-timeout').value  = profile?.timeout_ms || '';
+  document.getElementById('pf-prompt').value   = profile?.system_prompt || '';
+  document.getElementById('modal-msg').textContent = '';
+  document.getElementById('modal-delete-btn').style.display = profile ? '' : 'none';
+  document.getElementById('profile-modal').style.display = 'flex';
+}
+
+function closeProfileModal() {
+  document.getElementById('profile-modal').style.display = 'none';
+}
+
+async function saveProfile() {
+  const name = document.getElementById('pf-name').value.trim();
+  const trigger = document.getElementById('pf-trigger').value.trim();
+  const command = document.getElementById('pf-command').value.trim();
+  const argsRaw = document.getElementById('pf-args').value;
+  const workdir = document.getElementById('pf-workdir').value.trim();
+  const desc    = document.getElementById('pf-desc').value.trim();
+  const timeout = document.getElementById('pf-timeout').value.trim();
+  const prompt  = document.getElementById('pf-prompt').value.trim();
+  const msg     = document.getElementById('modal-msg');
+
+  if (!name || !command) { msg.textContent = '名称和命令不能为空'; return; }
+  const args = argsRaw.split('\\n').map(l => l.trim()).filter(Boolean);
+
+  const body = { name, trigger: trigger || name, command, args };
+  if (workdir) body.workdir = workdir;
+  if (desc)    body.description = desc;
+  if (timeout) body.timeout_ms = parseInt(timeout, 10);
+  if (prompt)  body.system_prompt = prompt;
+
+  msg.textContent = '保存中…';
+  try {
+    const r = await fetch('/api/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (d.ok) { closeProfileModal(); setTimeout(refresh, 300); }
+    else { msg.textContent = '失败: ' + d.error; }
+  } catch(e) { msg.textContent = '请求失败: ' + e.message; }
+}
+
+async function deleteProfile() {
+  if (!_editingProfile) return;
+  if (!confirm(\`确认删除 Profile "\${_editingProfile.name}"？\`)) return;
+  const msg = document.getElementById('modal-msg');
+  msg.textContent = '删除中…';
+  try {
+    const r = await fetch('/api/profiles/' + encodeURIComponent(_editingProfile.name), {
+      method: 'DELETE',
+    });
+    const d = await r.json();
+    if (d.ok) { closeProfileModal(); setTimeout(refresh, 300); }
+    else { msg.textContent = '失败: ' + d.error; }
+  } catch(e) { msg.textContent = '请求失败: ' + e.message; }
 }
 
 async function discardPending(messageId) {
@@ -518,6 +653,72 @@ function discardPending(messageId, opts = {}) {
   }
 }
 
+// ── Profile write helpers ─────────────────────────────────────────────────────
+
+/**
+ * Read the current profiles yaml and return { config, raw } where `config` is
+ * the parsed object and `raw` is the original string (we rebuild via js-yaml dump).
+ */
+function _loadProfilesYaml(profilesFile) {
+  const raw = fs.readFileSync(profilesFile, 'utf8');
+  const yaml = require('js-yaml');
+  return { config: yaml.load(raw) || {}, yaml };
+}
+
+/**
+ * Save a profile entry (add or update) to email-profiles.yaml.
+ * Returns { ok: true } or { error: string }.
+ */
+function saveProfileToYaml(profileEntry, opts = {}) {
+  const profilesFile = opts.profilesConfig || path.join(process.cwd(), 'email-profiles.yaml');
+  try {
+    const { config, yaml } = _loadProfilesYaml(profilesFile);
+    if (!config.profiles) config.profiles = {};
+    const { name, ...rest } = profileEntry;
+    config.profiles[name] = rest;
+    const newYaml = yaml.dump(config, { lineWidth: 120, indent: 2 });
+    // Atomic write: tmp + rename to avoid partial reads on crash
+    const tmp = `${profilesFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, newYaml, 'utf8');
+    fs.renameSync(tmp, profilesFile);
+    return { ok: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+/**
+ * Delete a profile entry from email-profiles.yaml.
+ * Returns { ok: true } or { error: string }.
+ */
+function deleteProfileFromYaml(name, opts = {}) {
+  const profilesFile = opts.profilesConfig || path.join(process.cwd(), 'email-profiles.yaml');
+  try {
+    const { config, yaml } = _loadProfilesYaml(profilesFile);
+    if (!config.profiles || !config.profiles[name]) {
+      return { error: `Profile "${name}" not found` };
+    }
+    // Prevent deleting the default profile if it's the only one remaining
+    if (config.default === name) {
+      const remaining = Object.keys(config.profiles).filter(k => k !== name);
+      if (remaining.length === 0) {
+        return { error: '无法删除唯一的默认 Profile，请先添加其他 Profile 再删除' };
+      }
+      // Reassign default to first remaining profile
+      config.default = remaining[0];
+    }
+    delete config.profiles[name];
+    const newYaml = yaml.dump(config, { lineWidth: 120, indent: 2 });
+    // Atomic write: tmp + rename to avoid partial reads on crash
+    const tmp = `${profilesFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, newYaml, 'utf8');
+    fs.renameSync(tmp, profilesFile);
+    return { ok: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 
 /**
@@ -588,6 +789,19 @@ function startDashboard(opts = {}) {
         return;
       }
 
+      if (req.url === '/api/profiles') {
+        const { name, ...rest } = body;
+        if (!name || !rest.command) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'name and command required' }));
+          return;
+        }
+        const result = saveProfileToYaml({ name, ...rest }, opts);
+        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
+
       if (req.url === '/api/pending') {
         const { action, message_id } = body;
         if (action === 'discard' && message_id) {
@@ -601,6 +815,21 @@ function startDashboard(opts = {}) {
         return;
       }
 
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+      return;
+    }
+
+    // ── DELETE endpoints ──
+    if (req.method === 'DELETE') {
+      const m = req.url.match(/^\/api\/profiles\/(.+)$/);
+      if (m) {
+        const name = decodeURIComponent(m[1]);
+        const result = deleteProfileFromYaml(name, opts);
+        res.writeHead(result.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
       return;

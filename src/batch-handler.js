@@ -47,6 +47,7 @@ class BatchHandler {
     this._cfg            = opts.batchConfig || {};
     this._dryRun         = opts.dryRun || false;
     this._timer          = null;
+    this._summarySending = false; // mutex: prevent overlapping _sendSummary calls
     // 上次发送摘要的时间从 BatchStore 加载（重启后不失忆）
     this._lastReportAt   = this._store.getLastReportAt();
   }
@@ -176,6 +177,19 @@ class BatchHandler {
   // ── 私有：定时摘要 ─────────────────────────────────────────────────────────
 
   async _sendSummary() {
+    if (this._summarySending) {
+      process.stderr.write(`[batch] Previous summary still sending, skipping this tick\n`);
+      return;
+    }
+    this._summarySending = true;
+    try {
+      await this._doSendSummary();
+    } finally {
+      this._summarySending = false;
+    }
+  }
+
+  async _doSendSummary() {
     const admins = this._acl.adminSenders;
     if (admins.length === 0) {
       process.stderr.write(`[batch] No admin_senders configured, skipping summary\n`);

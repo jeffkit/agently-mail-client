@@ -398,6 +398,7 @@ class AgentlyMailClient {
     const seenIds      = new BoundedSet();
     let stopped        = false;
     let timer          = null;
+    let ticking        = false; // mutex: skip new tick if previous is still running
 
     // Current adaptive interval — starts at maxIntervalMs (conservative on start)
     let currentInterval = maxIntervalMs;
@@ -409,6 +410,13 @@ class AgentlyMailClient {
 
     const tick = async () => {
       if (stopped) return;
+      if (ticking) {
+        // Previous tick is still running (slow handler / AI profile took too long).
+        // Schedule retry instead of overlapping — do NOT reset the adaptive interval.
+        timer = setTimeout(tick, currentInterval);
+        return;
+      }
+      ticking = true;
       let foundMessages = false;
       try {
         const { messages } = await this.list({ after: afterTimestamp, limit, dir: 'inbox' });
@@ -461,8 +469,9 @@ class AgentlyMailClient {
           return;
         }
         process.stderr.write(`[agently-mail] poll error: ${err?.message || err}\n`);
+      } finally {
+        ticking = false;
       }
-
       if (!stopped) {
         if (adaptive) {
           if (foundMessages) {

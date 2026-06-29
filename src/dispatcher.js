@@ -394,7 +394,8 @@ class ProfileDispatcher {
   /**
    * @param {string} configPath  Path to email-profiles.yaml
    * @param {object} [opts]
-   * @param {boolean} [opts.stripQuotes=true]  Remove quoted text from replies
+   * @param {boolean} [opts.stripQuotes=true]    Remove quoted text from replies
+   * @param {string}  [opts.configDir]           Base dir for resolving relative workdir paths
    * @param {number}  [opts.maxBodyLength=8000] Truncate body at N chars (0=off)
    */
   constructor(configPath, opts = {}) {
@@ -416,6 +417,22 @@ class ProfileDispatcher {
    */
   profileNames() {
     return Object.keys(this.config.profiles);
+  }
+
+  /**
+   * Reload profiles config from disk (hot-reload on file change).
+   * In-flight dispatches are unaffected; new dispatches pick up the fresh config.
+   */
+  reload() {
+    try {
+      this.config    = loadProfilesConfig(this.configPath);
+      this.configDir = path.dirname(path.resolve(this.configPath));
+      process.stderr.write(
+        `[email-bridge] Profiles config hot-reloaded: ${this.profileNames().length} profile(s): ${this.profileNames().join(', ')}\n`,
+      );
+    } catch (err) {
+      process.stderr.write(`[email-bridge] Failed to reload profiles config: ${err.message}\n`);
+    }
   }
 
   /**
@@ -619,10 +636,19 @@ class ProfileDispatcher {
       ? cfg.timeout_ms
       : PROFILE_TIMEOUT_MS;
 
+    // Per-profile workdir: resolve relative paths against the profiles yaml directory
+    let cwd;
+    if (cfg.workdir) {
+      cwd = path.isAbsolute(cfg.workdir)
+        ? cfg.workdir
+        : path.resolve(this.configDir || process.cwd(), cfg.workdir);
+    }
+
     let result;
     try {
       result = await spawnWithTimeout(cfg.command, args, {
         timeoutMs,
+        cwd,
         env: {
           ...process.env,
           AGENT_MESSAGE: message,

@@ -140,7 +140,10 @@ function createEmailBridge(options = {}) {
   function saveCursor(ts) {
     try {
       fs.mkdirSync(storeDir, { recursive: true });
-      fs.writeFileSync(cursorFile, JSON.stringify({ afterTimestamp: ts }, null, 2), 'utf8');
+      // Atomic write: tmp + rename to avoid partial reads on crash
+      const tmp = `${cursorFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ afterTimestamp: ts }, null, 2), 'utf8');
+      fs.renameSync(tmp, cursorFile);
     } catch (err) {
       // 持久化失败不能静默：进程重启后会重复处理上一批
       process.stderr.write(`[email-bridge] Failed to save poll cursor: ${err.message}\n`);
@@ -199,6 +202,23 @@ function createEmailBridge(options = {}) {
   process.stderr.write(
     `[email-bridge] Loaded ${profileNames.length} profile(s): ${profileNames.join(', ')}\n`,
   );
+
+  // Hot-reload: watch the profiles yaml for changes (e.g. dashboard edits)
+  // Debounced 300ms to avoid double-firing on some editors/platforms
+  let reloadTimer = null;
+  let profilesWatcher = null;
+  try {
+    profilesWatcher = fs.watch(profilesConfig, () => {
+      if (reloadTimer) clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => {
+        reloadTimer = null;
+        dispatcher.reload();
+      }, 300);
+    });
+    profilesWatcher.on('error', () => { /* fs.watch errors are non-fatal */ });
+  } catch {
+    // fs.watch may not work in all environments; non-fatal
+  }
 
   // Verify auth and collect own addresses for self-filter (async, runs at startup)
   let ownAddresses = new Set();
@@ -518,6 +538,9 @@ function createEmailBridge(options = {}) {
     if (batchHandler) batchHandler.stop();
     if (retryTimer) clearInterval(retryTimer);
     scheduleRunner.stop();
+    // Close the profiles yaml watcher to prevent resource leaks
+    if (reloadTimer) clearTimeout(reloadTimer);
+    if (profilesWatcher) { try { profilesWatcher.close(); } catch {} }
   };
   process.on('SIGINT', () => {
     process.stderr.write('\n[email-bridge] Stopping...\n');
