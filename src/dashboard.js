@@ -126,6 +126,17 @@ function readState(opts = {}) {
     // 无游标时忽略
   }
 
+  // ── rate-limit live stats (written by the bridge process) ──
+  let rateLimit = null;
+  try {
+    const rpmFile = path.join(storeDir, 'rpm-stats.json');
+    if (fs.existsSync(rpmFile)) {
+      rateLimit = JSON.parse(fs.readFileSync(rpmFile, 'utf8'));
+    }
+  } catch {
+    // stats file missing or corrupt — non-fatal
+  }
+
   return {
     timestamp: new Date().toISOString(),
     lastPollAt,
@@ -144,6 +155,7 @@ function readState(opts = {}) {
     pending,
     batch,
     denied,
+    rateLimit,
   };
 }
 

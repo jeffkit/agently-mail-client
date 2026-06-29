@@ -1,5 +1,5 @@
-import { Mail, Users, Clock, Ban, Activity, Wifi } from 'lucide-react';
-import { useState as useApiState } from '../hooks/useApi';
+import { Mail, Users, Clock, Ban, Activity, Wifi, Gauge } from 'lucide-react';
+import { useState as useApiState, useMe } from '../hooks/useApi';
 
 const fmt = (iso) =>
   iso ? new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '—';
@@ -57,8 +57,58 @@ function RecentRow({ entry }) {
   );
 }
 
+function QuotaCell({ label, value, unit }) {
+  return (
+    <div style={{ padding: '10px 12px', background: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
+      <div style={{ fontSize: 11, color: 'var(--text-dim)', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 600 }}>
+        {value ?? '—'}{unit && value != null ? ` ${unit}` : ''}
+      </div>
+    </div>
+  );
+}
+
+function RateLimitCard({ rateLimit, me }) {
+  const rl = rateLimit || { enabled: true, capacity: 8, available: 8, recent: 0, waiting: false };
+  const pct = rl.capacity > 0 ? (rl.available / rl.capacity) * 100 : 100;
+  const barColor = pct > 50 ? 'var(--green)' : pct > 20 ? 'var(--yellow)' : 'var(--red)';
+  const quota = me?.rate_limits || {};
+  return (
+    <div className="card fade-up" style={{ animationDelay: '0.03s' }}>
+      <div className="card-header">
+        <h3><Gauge size={13} />限频与可用额度</h3>
+        <span className={`badge ${rl.waiting ? 'badge-yellow' : 'badge-green'}`}>
+          {rl.waiting ? '节流等待中' : '正常'}
+        </span>
+      </div>
+      <div className="card-body">
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
+            <span style={{ color: 'var(--text-muted)' }}>本进程 RPM 令牌桶</span>
+            <span className="mono" style={{ color: 'var(--text)' }}>
+              {rl.available}/{rl.capacity} 可用 · 近60s {rl.recent} 次
+            </span>
+          </div>
+          <div style={{ height: 8, background: 'var(--bg-hover)', borderRadius: 99, overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${pct}%`, background: barColor, transition: 'width 0.3s' }} />
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 6 }}>
+            自限流 {rl.capacity} req/min（服务端硬上限 10 req/min，预留余量避免 429）
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+          <QuotaCell label="请求/分钟" value={quota.requests_per_minute} />
+          <QuotaCell label="请求/小时" value={quota.requests_per_hour} />
+          <QuotaCell label="日发送额度" value={quota.daily_send_quota} unit="封" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Overview() {
   const { data, isLoading, error, dataUpdatedAt } = useApiState();
+  const { data: me } = useMe();
 
   if (isLoading) return (
     <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
@@ -91,6 +141,9 @@ export function Overview() {
         <StatCard icon={Clock}    value={batch.queued ?? 0}       label="批处理队列"      color="var(--green)" />
         <StatCard icon={Ban}      value={denied.unreported ?? 0}  label="未上报拦截"      color="var(--red)" />
       </div>
+
+      {/* Rate limit & quota */}
+      <RateLimitCard rateLimit={data?.rateLimit} me={me} />
 
       {/* Recent mails */}
       <div className="card fade-up" style={{ animationDelay: '0.05s' }}>

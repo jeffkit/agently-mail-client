@@ -23,6 +23,10 @@
  * });
  */
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 const { POLL_SEEN_CACHE_SIZE, CLI_TIMEOUT_MS } = require('./constants');
 const { spawnWithTimeout } = require('./spawn');
 
@@ -70,6 +74,89 @@ class AgentlyMailError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// RPM rate limiter — sliding-window token bucket
+// ---------------------------------------------------------------------------
+// The server enforces a hard 10 req/min quota per account. Without client-side
+// throttling, a single poll batch that pulls N messages issues 1 + N*2 CLI
+// calls (list + read + reply each), which bursts past 10/min and triggers 429
+// exponential backoff (up to 4h). This limiter caps outbound CLI calls below
+// the hard limit so bursts cannot self-inflict rate-limiting.
+//
+// Config: AGENTLY_RPM_LIMIT env var (default 8, 0 disables). Window is 60s.
+
+const RPM_CAPACITY  = Math.max(0, parseInt(process.env.AGENTLY_RPM_LIMIT, 10) || 8);
+const RPM_WINDOW_MS = 60_000;
+
+const _rpmTimestamps = []; // request timestamps within the rolling window
+let   _rpmWaiting    = false;
+
+const _rpmStatsFile = path.join(os.homedir(), '.agently-mail-client', 'rpm-stats.json');
+let   _rpmWriteScheduled = false;
+
+function _sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+function _evictExpired(now) {
+  const cutoff = now - RPM_WINDOW_MS;
+  while (_rpmTimestamps.length && _rpmTimestamps[0] <= cutoff) {
+    _rpmTimestamps.shift();
+  }
+}
+
+function getRpmStats() {
+  const now = Date.now();
+  _evictExpired(now);
+  return {
+    enabled:   RPM_CAPACITY > 0,
+    capacity:  RPM_CAPACITY,
+    windowMs:  RPM_WINDOW_MS,
+    recent:    _rpmTimestamps.length,
+    available: Math.max(0, RPM_CAPACITY - _rpmTimestamps.length),
+    waiting:   _rpmWaiting,
+  };
+}
+
+// Persist live stats to disk so the dashboard (a separate process) can render
+// the bridge's real-time token bucket. Debounced — at most one write per 500ms.
+function _persistRpmStats() {
+  if (RPM_CAPACITY <= 0 || _rpmWriteScheduled) return;
+  _rpmWriteScheduled = true;
+  setTimeout(() => {
+    _rpmWriteScheduled = false;
+    try {
+      fs.mkdirSync(path.dirname(_rpmStatsFile), { recursive: true });
+      const payload = { ...getRpmStats(), updatedAt: new Date().toISOString() };
+      const tmp = `${_rpmStatsFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(payload));
+      fs.renameSync(tmp, _rpmStatsFile);
+    } catch {
+      // stats persistence is best-effort; never let it break mail processing
+    }
+  }, 500);
+}
+
+/**
+ * Block until an outbound CLI call may proceed under the RPM cap.
+ * Sliding-window: keeps at most `RPM_CAPACITY` calls in any 60s window.
+ */
+async function throttleRpm() {
+  if (RPM_CAPACITY <= 0) return;
+  for (;;) {
+    const now = Date.now();
+    _evictExpired(now);
+    if (_rpmTimestamps.length < RPM_CAPACITY) {
+      _rpmTimestamps.push(now);
+      _persistRpmStats();
+      return;
+    }
+    // Window saturated — wait until the oldest call ages out, then recheck.
+    const waitMs = (_rpmTimestamps[0] + RPM_WINDOW_MS) - now + 1;
+    _rpmWaiting = true;
+    await _sleep(Math.max(waitMs, 10));
+    _rpmWaiting = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Low-level CLI runner (async — never blocks the event loop)
 // ---------------------------------------------------------------------------
 
@@ -81,6 +168,7 @@ class AgentlyMailError extends Error {
  * @returns {Promise<unknown>} data field from the JSON envelope
  */
 async function runCli(args) {
+  await throttleRpm();
   let result;
   try {
     result = await spawnWithTimeout('agently-cli', args, { timeoutMs: CLI_TIMEOUT_MS });
@@ -506,4 +594,4 @@ class AgentlyMailClient {
   }
 }
 
-module.exports = { AgentlyMailClient, AgentlyMailError };
+module.exports = { AgentlyMailClient, AgentlyMailError, getRpmStats };

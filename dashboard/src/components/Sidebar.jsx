@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
-  LayoutDashboard, Mail, Users, ShieldCheck, Clock, Ban,
+  LayoutDashboard, Mail, Users, ShieldCheck, Clock, Ban, Sun, Moon,
 } from 'lucide-react';
 import { useMe } from '../hooks/useApi';
 
@@ -86,6 +87,28 @@ function AccountBadge() {
   );
 }
 
+function ThemeToggle() {
+  const [theme, setTheme] = useState(
+    () => (document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'),
+  );
+  const toggle = () => {
+    const next = theme === 'light' ? 'dark' : 'light';
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('agently-theme', next);
+  };
+  return (
+    <button
+      onClick={toggle}
+      className="btn btn-ghost btn-sm"
+      title={theme === 'light' ? '切换暗色模式' : '切换亮色模式'}
+      style={{ padding: '4px 8px', flexShrink: 0 }}
+    >
+      {theme === 'light' ? <Moon size={14} /> : <Sun size={14} />}
+    </button>
+  );
+}
+
 export function Sidebar({ pollAt }) {
   const now = pollAt
     ? new Date(pollAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
@@ -130,8 +153,13 @@ export function Sidebar({ pollAt }) {
         fontSize: 11,
         color: 'var(--text-dim)',
         fontFamily: 'var(--font-mono)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
       }}>
-        上次轮询 {now}
+        <span>上次轮询 {now}</span>
+        <ThemeToggle />
       </div>
     </nav>
   );
