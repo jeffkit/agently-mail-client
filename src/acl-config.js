@@ -133,12 +133,27 @@ class AclConfig {
    * @param {string} [opts.dynamicFile]     Path to acl-dynamic.json
    */
   constructor(opts = {}) {
-    this._dynamicFile = opts.dynamicFile || DEFAULT_DYNAMIC_FILE;
-    this._static      = this._loadStatic(opts.aclConfigFile);
-    this._dynamic     = this._loadDynamic();
-    this._merged      = this._merge();
+    this._aclConfigFile = opts.aclConfigFile || null;
+    this._dynamicFile   = opts.dynamicFile || DEFAULT_DYNAMIC_FILE;
+    this._static        = this._loadStatic(this._aclConfigFile);
+    this._dynamic       = this._loadDynamic();
+    this._merged        = this._merge();
 
     // 启动时校验 admin_senders 配置合理性（仅警告，不阻塞启动）
+    for (const w of validateAdminSenders(this.adminSenders)) {
+      process.stderr.write(`[acl-config] ⚠ ${w}\n`);
+    }
+  }
+
+  /**
+   * Hot-reload: 重新读取静态 yaml + 动态文件并原地合并。
+   * 已持有的 AclConfig / SenderAcl / AdminHandler 引用通过 getter 实时读取，
+   * 无需重建——下次 checkGlobal / isAdmin 即用新规则。
+   */
+  reload() {
+    this._static  = this._loadStatic(this._aclConfigFile);
+    this._dynamic = this._loadDynamic();
+    this._merged  = this._merge();
     for (const w of validateAdminSenders(this.adminSenders)) {
       process.stderr.write(`[acl-config] ⚠ ${w}\n`);
     }

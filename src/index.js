@@ -23,6 +23,7 @@ const path = require('path');
 const { AgentlyMailClient, AgentlyMailError } = require('./agently-mail');
 const { ProfileDispatcher, convertMarkdownToHtml } = require('./dispatcher');
 const { PendingStore } = require('./pending-store');
+const { MailArchive, computeThreadRoot } = require('./mail-archive');
 const { AclConfig } = require('./acl-config');
 const { SenderAcl } = require('./sender-acl');
 const { DeniedLog } = require('./denied-log');
@@ -95,6 +96,7 @@ function isSelfSent(msgSummary, ownAddresses) {
  * @param {number}  [options.limit]            Max messages per poll cycle (default 20)
  * @param {boolean} [options.filterSelfSent]   Skip emails sent by our own address (default true)
  * @param {string}  [options.pendingStoreFile] Custom path for pending state JSON file
+ * @param {string}  [options.archiveFile]      Custom path for mail archive JSONL file
  * @returns {{ stop: () => void }}
  */
 function createEmailBridge(options = {}) {
@@ -111,6 +113,7 @@ function createEmailBridge(options = {}) {
     limit = 20,
     filterSelfSent = true,
     pendingStoreFile,
+    archiveFile,
     batchStoreFile,
     schedulesConfig: schedulesConfigFile = (() => {
       const candidate = path.join(process.cwd(), 'email-schedules.yaml');
@@ -153,6 +156,61 @@ function createEmailBridge(options = {}) {
   const mail       = new AgentlyMailClient();
   const dispatcher = new ProfileDispatcher(profilesConfig);
   const pending    = new PendingStore(pendingStoreFile);
+  const archive    = new MailArchive(
+    archiveFile ||
+    path.join(
+      pendingStoreFile
+        ? path.dirname(pendingStoreFile)
+        : path.join(os.homedir(), '.agently-mail-client'),
+      'mail-archive.jsonl',
+    ),
+  );
+
+  // 归档钩子：read/reply 顺带落盘正文，供 dashboard inbox/thread 视图使用。
+  // best-effort：归档失败只记日志，不影响主流程。
+  /**
+   * 读取邮件并归档正文（incoming）。
+   * @param {AgentlyMailClient} client
+   * @param {string} messageId
+   * @returns {Promise<object>} fullMsg
+   */
+  async function readAndArchive(client, messageId) {
+    const fullMsg = await client.read(messageId);
+    try { archive.archiveIncoming(fullMsg); } catch (err) {
+      process.stderr.write(`[email-bridge] archiveIncoming failed for ${messageId}: ${err.message}\n`);
+    }
+    return fullMsg;
+  }
+
+  /**
+   * 回复邮件并归档发出内容（outgoing），thread_root 从原邮件继承。
+   * @param {AgentlyMailClient} client
+   * @param {string} messageId
+   * @param {string} body
+   * @param {object} opts        reply options (bodyFormat etc.)
+   * @param {object} fullMsg     触发回复的原邮件（用于 thread 归组）
+   * @returns {Promise<object>}
+   */
+  async function replyAndArchive(client, messageId, body, opts, fullMsg) {
+    const res = await client.reply(messageId, body, opts);
+    try {
+      archive.archiveOutgoing({
+        thread_root: computeThreadRoot(fullMsg),
+        in_reply_to: fullMsg?.rfc_message_id || fullMsg?.message_id || null,
+        to: fullMsg?.from ? [fullMsg.from] : null,
+        cc: opts?.cc || null,
+        subject: fullMsg?.subject || '',
+        body_html: opts?.bodyFormat === 'html' ? body : null,
+        body_text: opts?.bodyFormat === 'html' ? null : body,
+        references: fullMsg?.references || null,
+        source: 'bridge',
+      });
+    } catch (err) {
+      process.stderr.write(`[email-bridge] archiveOutgoing failed for ${messageId}: ${err.message}\n`);
+    }
+    return res;
+  }
+
   const aclCfg     = new AclConfig({
     aclConfigFile,
     dynamicFile: pendingStoreFile
@@ -218,6 +276,49 @@ function createEmailBridge(options = {}) {
     profilesWatcher.on('error', () => { /* fs.watch errors are non-fatal */ });
   } catch {
     // fs.watch may not work in all environments; non-fatal
+  }
+
+  // Hot-reload: watch the ACL yaml (and dynamic file) for changes.
+  // allowed_senders / denied_senders / admin_senders / profile_acl 编辑后无需重启 bridge。
+  // AclConfig.reload() 原地刷新 _static/_merged，SenderAcl/AdminHandler 经 getter 实时生效。
+  let aclReloadTimer = null;
+  function scheduleAclReload() {
+    if (aclReloadTimer) clearTimeout(aclReloadTimer);
+    aclReloadTimer = setTimeout(() => {
+      aclReloadTimer = null;
+      try {
+        aclCfg.reload();
+        const allowed = aclCfg.allowedSenders.length;
+        const denied  = aclCfg.deniedSenders.length;
+        process.stderr.write(
+          `[email-bridge] ACL config hot-reloaded: ${allowed} allowed, ${denied} denied, deny_action=${aclCfg.denyAction}\n`,
+        );
+      } catch (err) {
+        process.stderr.write(`[email-bridge] Failed to reload ACL config: ${err.message}\n`);
+      }
+    }, 300);
+  }
+  let aclWatcher = null;
+  let aclDynamicWatcher = null;
+  try {
+    if (aclConfigFile) {
+      aclWatcher = fs.watch(aclConfigFile, scheduleAclReload);
+      aclWatcher.on('error', () => { /* non-fatal */ });
+    }
+  } catch {
+    // non-fatal
+  }
+  const aclDynamicFile = path.join(
+    pendingStoreFile ? path.dirname(pendingStoreFile) : path.join(os.homedir(), '.agently-mail-client'),
+    'acl-dynamic.json',
+  );
+  try {
+    if (fs.existsSync(aclDynamicFile)) {
+      aclDynamicWatcher = fs.watch(aclDynamicFile, scheduleAclReload);
+      aclDynamicWatcher.on('error', () => { /* non-fatal */ });
+    }
+  } catch {
+    // non-fatal
   }
 
   // Verify auth and collect own addresses for self-filter (async, runs at startup)
@@ -290,6 +391,16 @@ function createEmailBridge(options = {}) {
     pending.add(msg);
     pending.markReplied(message_id);
 
+    // 被拒的邮件仍归档进收件箱（只是不回复），便于在 dashboard 查看完整来信。
+    // 读取失败（如 429 限流）不影响拦截流程本身——denied-log 已记录。
+    try {
+      await readAndArchive(client, message_id);
+    } catch (err) {
+      process.stderr.write(
+        `[email-bridge] archive denied message failed for ${message_id}: ${err.message}\n`,
+      );
+    }
+
     if (acl.denyAction === 'notify' && !dryRun) {
       const body = acl.denyMessage ||
         '感谢您的来信。您的邮件无法被自动处理，请联系管理员。\n\nThank you for your message. Your email could not be processed automatically. Please contact the administrator.';
@@ -324,7 +435,7 @@ function createEmailBridge(options = {}) {
 
       let fullMsg;
       try {
-        fullMsg = await client.read(message_id);
+        fullMsg = await readAndArchive(client, message_id);
       } catch (err) {
         log(tid, `${tag} Failed to read ${message_id}: ${err.message}`);
         pending.markFailed(message_id, `read failed: ${err.message}`);
@@ -365,7 +476,7 @@ function createEmailBridge(options = {}) {
       if (!dryRun) {
         try {
           const htmlResponse = convertMarkdownToHtml(response);
-          await client.reply(message_id, htmlResponse, { bodyFormat: 'html' });
+          await replyAndArchive(client, message_id, htmlResponse, { bodyFormat: 'html' }, fullMsg);
           pending.markReplied(message_id);
           log(tid, `${tag} Replied (HTML): ${message_id}`);
         } catch (err) {
@@ -408,7 +519,7 @@ function createEmailBridge(options = {}) {
         log(tid, `Admin message from ${senderEmail}: "${subject}"`);
         let fullMsg;
         try {
-          fullMsg = await client.read(message_id);
+          fullMsg = await readAndArchive(client, message_id);
         } catch (err) {
           log(tid, `Admin message read failed: ${err.message} — will retry on next sweep`);
           pending.add(msg);
@@ -431,36 +542,49 @@ function createEmailBridge(options = {}) {
         // Admin with no commands → fall through to normal dispatch
       }
 
-      // Global ACL check (non-admin senders)
-      if (!acl.isAdmin(senderEmail) && acl.checkGlobal(senderEmail) === 'deny') {
-        await handleDenied(client, msg, 'global ACL');
-        return;
-      }
-
-      // 批处理模式分流：
-      //   - admin 发件人始终走即时处理
-      //   - instant_reply_senders（信任域）走即时处理
-      //   - 其余进入批队列
-      if (batchHandler && !acl.isAdmin(senderEmail) &&
-          !matchesAny(senderEmail, batchTrustedSenders)) {
-        // 读取完整消息以提取正文摘要（read() 同时在服务端标记已读，所以先 add）
-        pending.add(msg);
-        let fullMsg;
-        try {
-          fullMsg = await client.read(message_id);
-        } catch (err) {
-          log(tid, `Batch read failed for ${message_id}: ${err.message}`);
-          pending.markFailed(message_id, `read failed: ${err.message}`);
+      // ── ACL + 分流（非 admin 发件人）────────────────────────────────────────
+      // 批处理模式：黑名单 → 拒；白名单(allowed_senders) ∪ 即时名单(instant_reply_senders)
+      //   → 即时回复；其余（非白名单非黑名单）→ 进批队列待主人决策。
+      // 非批处理模式：黑名单 / 白名单外 → 拒；白名单内（或开放访问）→ 即时回复。
+      // denied/allowed 经 aclCfg getter 实时读取，ACL 热加载即时生效。
+      if (!acl.isAdmin(senderEmail)) {
+        const isBlacklisted = matchesAny(senderEmail, aclCfg.deniedSenders);
+        if (isBlacklisted) {
+          await handleDenied(client, msg, 'blacklisted');
           return;
         }
-        batchHandler.enqueue(msg, fullMsg);
-        // 批队列里的邮件不走 dispatchAndReply，标记 pending 为"已处理"以防 retry sweep 重触发
-        pending.markReplied(message_id);
-        log(tid, `[BATCH] Queued (not dispatched): "${subject}" from ${senderEmail}`);
-        return;
+
+        const isOpen = aclCfg.allowedSenders.length === 0; // 未配白名单 = 开放访问
+        const inWhitelist = !isOpen && matchesAny(senderEmail, aclCfg.allowedSenders);
+        const isInstant = inWhitelist || matchesAny(senderEmail, aclCfg.instantReplySenders);
+
+        if (batchHandler) {
+          if (!isInstant) {
+            // 进批队列待主人决策（read() 在服务端标记已读，所以先 add 防丢失）
+            pending.add(msg);
+            let fullMsg;
+            try {
+              fullMsg = await readAndArchive(client, message_id);
+            } catch (err) {
+              log(tid, `Batch read failed for ${message_id}: ${err.message}`);
+              pending.markFailed(message_id, `read failed: ${err.message}`);
+              return;
+            }
+            batchHandler.enqueue(msg, fullMsg);
+            // 批队列里的邮件不走 dispatchAndReply，标记 pending 为"已处理"以防 retry sweep 重触发
+            pending.markReplied(message_id);
+            log(tid, `[BATCH] Queued (not dispatched): "${subject}" from ${senderEmail}`);
+            return;
+          }
+          // 白名单 / 即时名单 → fall through 到即时处理
+        } else if (!isOpen && !inWhitelist) {
+          // 非批处理模式：配置了白名单但发件人不在其中 → 拒
+          await handleDenied(client, msg, 'global ACL');
+          return;
+        }
       }
 
-      // 即时处理路径（信任域 / admin / 非批处理模式）
+      // 即时处理路径（admin / 白名单 / 即时名单 / 开放访问）
       pending.add(msg);
 
       await dispatchAndReply(message_id, subject, senderEmail, client, false);
@@ -541,6 +665,9 @@ function createEmailBridge(options = {}) {
     // Close the profiles yaml watcher to prevent resource leaks
     if (reloadTimer) clearTimeout(reloadTimer);
     if (profilesWatcher) { try { profilesWatcher.close(); } catch {} }
+    if (aclReloadTimer) clearTimeout(aclReloadTimer);
+    if (aclWatcher) { try { aclWatcher.close(); } catch {} }
+    if (aclDynamicWatcher) { try { aclDynamicWatcher.close(); } catch {} }
   };
   process.on('SIGINT', () => {
     process.stderr.write('\n[email-bridge] Stopping...\n');
@@ -563,6 +690,7 @@ module.exports = {
   AgentlyMailError,
   ProfileDispatcher,
   PendingStore,
+  MailArchive,
   AclConfig,
   SenderAcl,
   DeniedLog,
