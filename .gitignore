@@ -8,3 +8,4 @@ email-acl.yaml
 src/dashboard-dist/
 .playwright-mcp/
 screenshots/
+.gitnexus
