@@ -21,6 +21,8 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
+const { loadAclConfig } = require('./yaml-loader');
+
 const DEFAULT_STORE_DIR    = path.join(os.homedir(), '.agently-mail-client');
 const DEFAULT_DYNAMIC_FILE = path.join(DEFAULT_STORE_DIR, 'acl-dynamic.json');
 
@@ -70,56 +72,6 @@ function validateAdminSenders(adminSenders) {
     }
   }
   return warnings;
-}
-
-// ---------------------------------------------------------------------------
-// YAML loader (mirrors dispatcher.js approach — js-yaml with simple fallback)
-// ---------------------------------------------------------------------------
-
-function loadYaml(filePath) {
-  const raw = fs.readFileSync(filePath, 'utf8');
-  try {
-    const yaml = require('js-yaml');
-    return yaml.load(raw) || {};
-  } catch {
-    return _parseSimpleYaml(raw);
-  }
-}
-
-function _parseSimpleYaml(text) {
-  const result = {};
-  let currentKey = null;
-  let inList     = false;
-
-  for (const rawLine of text.split('\n')) {
-    const line    = rawLine;
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    // Top-level list item
-    const listM = line.match(/^  - (.+)/);
-    if (listM && inList && currentKey) {
-      result[currentKey].push(listM[1].trim().replace(/\s+#.*$/, ''));
-      continue;
-    }
-
-    // Key: value  or  Key:  (start of list)
-    const kvM = line.match(/^([\w_-]+):\s*(.*)/);
-    if (kvM) {
-      const key = kvM[1];
-      const val = kvM[2].replace(/\s+#.*$/, '').trim();
-      if (val === '') {
-        result[key] = [];
-        currentKey  = key;
-        inList      = true;
-      } else {
-        result[key] = val;
-        currentKey  = null;
-        inList      = false;
-      }
-    }
-  }
-  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +188,7 @@ class AclConfig {
   _loadStatic(aclConfigFile) {
     if (!aclConfigFile) return {};
     try {
-      return loadYaml(aclConfigFile);
+      return loadAclConfig(aclConfigFile);
     } catch (err) {
       process.stderr.write(`[acl-config] Cannot load ${aclConfigFile}: ${err.message}\n`);
       return {};

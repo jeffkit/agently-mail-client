@@ -17,7 +17,12 @@ const { convertMarkdownToHtml } = require('./dispatcher');
 
 function loadSchedulesConfig(configPath) {
   if (!fs.existsSync(configPath)) return { tasks: [] };
-  const raw = yaml.load(fs.readFileSync(configPath, 'utf8'));
+  let raw;
+  try {
+    raw = yaml.load(fs.readFileSync(configPath, 'utf8'));
+  } catch {
+    return { tasks: [] };
+  }
   const tasks = Array.isArray(raw?.tasks) ? raw.tasks : [];
   return { tasks };
 }

@@ -2,11 +2,18 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 const BASE = '';  // same-origin, or proxied in dev
 
+// 从 index.html 注入的 window 变量中读取 dashboard token（由后端在启动时生成）。
+// 所有写操作（POST / DELETE）附带此 token，防止 CSRF。
+const DASHBOARD_TOKEN = (typeof window !== 'undefined' && window.__DASHBOARD_TOKEN__) || '';
+
 async function apiFetch(path, opts = {}) {
-  const res = await fetch(BASE + path, {
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
-    ...opts,
-  });
+  const isWrite = opts.method && opts.method !== 'GET';
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(isWrite && DASHBOARD_TOKEN ? { 'X-Dashboard-Token': DASHBOARD_TOKEN } : {}),
+    ...opts.headers,
+  };
+  const res = await fetch(BASE + path, { headers, ...opts });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || `HTTP ${res.status}`);

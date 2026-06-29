@@ -17,6 +17,7 @@
  */
 
 const { cleanBody, convertMarkdownToHtml } = require('./dispatcher');
+const { matchesAny } = require('./sender-acl');
 
 // 摘要邮件主题前缀，用于识别主人的回复（AdminHandler 已通过 isAdmin 鉴权）
 const BATCH_SUMMARY_SUBJECT_PREFIX = '[邮件批处理摘要]';
@@ -279,25 +280,17 @@ class BatchHandler {
     ].join('\n');
 
     // 调用 dispatcher 的默认 profile 来解读
+    // 使用每次唯一的 session id 确保与定时任务历史隔离，复用公开的 dispatchRaw API
     const profileName = this._cfg.ai_profile || this._dispatcher.config.default;
-    const profileConfig = this._dispatcher.config.profiles[profileName];
-    if (!profileConfig) {
-      throw new Error(`Batch AI profile "${profileName}" not found in profiles config`);
-    }
 
-    // 构造一个最小化的 fullMsg 对象来复用 dispatcher._spawnProfile
-    const rawOutput = await this._dispatcher._spawnProfile(
-      profileConfig,
-      prompt,
-      '',           // 无会话历史，每次解读独立
-      'batch-interpret',
-      'batch',
-      this._dryRun,
+    const { response } = await this._dispatcher.dispatchRaw(
       profileName,
-      'batch-interpret',
+      prompt,
+      `batch-interpret-${Date.now()}`,
+      this._dryRun,
     );
 
-    const text = (rawOutput.response || '').slice(0, MAX_AI_OUTPUT_LENGTH);
+    const text = (response || '').slice(0, MAX_AI_OUTPUT_LENGTH);
 
     // 从输出中提取 JSON 数组（AI 可能在 JSON 前后输出多余文字）
     const jsonMatch = text.match(/\[[\s\S]*\]/);
@@ -358,6 +351,14 @@ class BatchHandler {
       }
 
       // action === 'reply'：走正常 dispatchAndReply 流程
+      // Re-check ACL: sender may have been dynamically denied between enqueue and execution
+      if (matchesAny(entry.from_email, this._acl.deniedSenders)) {
+        process.stderr.write(`[batch] Skipping reply for ${message_id}: sender ${entry.from_email} is now denied\n`);
+        this._store.markSkipped(message_id);
+        results.push({ entry, action: 'skip', success: true });
+        continue;
+      }
+
       process.stderr.write(`[batch] Dispatching: ${message_id} "${entry.subject}"\n`);
       try {
         const ok = await this._dispatchAndReply(

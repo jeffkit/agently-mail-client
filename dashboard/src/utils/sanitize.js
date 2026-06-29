@@ -25,7 +25,9 @@ const DROP_TAGS = new Set([
 
 const ALLOWED_ATTRS = new Set([
   'href', 'src', 'alt', 'title', 'width', 'height',
-  'style', 'color', 'face', 'size', 'align', 'valign',
+  // style 属性不允许：攻击者可通过 CSS（如 position:fixed 全屏遮罩）实施 UI 重定向/钓鱼。
+  // 与后端 dispatcher.js 使用的 sanitize-html 策略保持一致（allowedStyles: {}）。
+  'color', 'face', 'size', 'align', 'valign',
   'colspan', 'rowspan', 'target', 'rel',
 ]);
 

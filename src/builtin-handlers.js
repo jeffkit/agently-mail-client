@@ -61,7 +61,7 @@ async function rateLimitRecovery(task, ctx) {
     process.stderr.write('[builtin:rate-limit-recovery] Rate limit cleared detected. Sending notification.\n');
 
     if (!dryRun) {
-      mail.send(
+      await mail.send(
         notifyTo,
         'Agently Mail Client 已恢复正常',
         '<p>API 限流已解除，Agently Mail Client 现在运行正常，可以正常收发邮件了。</p>',

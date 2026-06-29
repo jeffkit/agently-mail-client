@@ -1,4 +1,4 @@
-import { Mail, Users, Clock, Ban, Activity, Wifi, Gauge } from 'lucide-react';
+import { Mail, Users, Clock, Ban, Activity, Wifi, Gauge, ShieldAlert } from 'lucide-react';
 import { useState as useApiState, useMe } from '../hooks/useApi';
 
 const fmt = (iso) =>
@@ -121,11 +121,38 @@ export function Overview() {
     </div>
   );
 
-  const { profiles = [], pending = {}, batch = {}, denied = {}, lastPollAt } = data;
+  const { profiles = [], pending = {}, batch = {}, denied = {}, lastPollAt, acl } = data;
   const recent = (pending.entries || []).slice(-5).reverse();
+
+  // 安全警告：未配置 ACL（open access）时显示醒目横幅
+  const allowedSenders = acl?.static?.allowedSenders;
+  const isOpenAccess = !allowedSenders || allowedSenders.length === 0;
 
   return (
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 24 }}>
+      {/* 安全警告横幅 */}
+      {isOpenAccess && (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: 12,
+          padding: '14px 18px', borderRadius: 10,
+          background: 'rgba(220, 38, 38, 0.08)',
+          border: '1px solid rgba(220, 38, 38, 0.3)',
+        }}>
+          <ShieldAlert size={18} color="var(--red)" style={{ flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <div style={{ fontWeight: 600, color: 'var(--red)', fontSize: 13, marginBottom: 4 }}>
+              安全警告：未配置 ACL，所有发件人均可触发 AI CLI
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              未找到 <code style={{ fontFamily: 'monospace', background: 'var(--bg-hover)', padding: '1px 5px', borderRadius: 3 }}>email-acl.yaml</code> 或
+              {' '}<code style={{ fontFamily: 'monospace', background: 'var(--bg-hover)', padding: '1px 5px', borderRadius: 3 }}>allowed_senders</code> 为空。
+              任意人发送邮件即可调用配置的 AI Profile（可能包含危险执行权限）。
+              请配置 <code style={{ fontFamily: 'monospace', background: 'var(--bg-hover)', padding: '1px 5px', borderRadius: 3 }}>allowed_senders</code> 白名单后重启 Bridge。
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h1 style={{ fontSize: 20, fontWeight: 600 }}>概览</h1>
         <div style={{ fontSize: 12, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 6 }}>

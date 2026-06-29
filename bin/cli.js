@@ -120,10 +120,25 @@ if (subcmd === 'dashboard') {
   const portArg    = getArg(subargs, '--port');
   const hostArg    = getArg(subargs, '--host');
   const noOpen     = hasFlag(subargs, '--no-open');
+  const resolvedHost = hostArg || '127.0.0.1';
+  const resolvedPort = portArg ? parseInt(portArg, 10) : 3030;
+
+  // 非 localhost 绑定：强提示安全风险
+  const isLocalhost = ['127.0.0.1', '::1', 'localhost'].includes(resolvedHost);
+  if (!isLocalhost) {
+    console.error('');
+    console.error('⚠️  安全警告 ──────────────────────────────────────────────');
+    console.error(`   Dashboard 绑定到非 localhost 地址：${resolvedHost}:${resolvedPort}`);
+    console.error('   Dashboard 写 API 无外部鉴权（发邮件 / 改 ACL / 改 Profile）');
+    console.error('   局域网内任何人均可通过浏览器操控你的邮件账号！');
+    console.error('   建议：改用 127.0.0.1 + SSH 隧道代替直接暴露。');
+    console.error('────────────────────────────────────────────────────────');
+    console.error('');
+  }
 
   startDashboard({
-    port:           portArg ? parseInt(portArg, 10) : 3030,
-    host:           hostArg || '127.0.0.1',
+    port:           resolvedPort,
+    host:           resolvedHost,
     profilesConfig: configArg ? path.resolve(configArg) : undefined,
     aclConfig:      aclArg   ? path.resolve(aclArg)    : undefined,
     open:           !noOpen,
@@ -137,6 +152,18 @@ const configArg      = getArg(subargs, '--config') || process.env.PROFILES_CONFI
 const intervalArg    = getArg(subargs, '--interval') || process.env.POLL_INTERVAL_MS;
 const dryRunArg      = hasFlag(subargs, '--dry-run') || process.env.DRY_RUN === '1';
 const noAdaptiveArg  = hasFlag(subargs, '--no-adaptive') || process.env.ADAPTIVE_POLLING === '0';
+
+// 无 ACL 配置时打印安全警告（非 dry-run 场景下）
+const aclFile = path.resolve(process.cwd(), 'email-acl.yaml');
+if (!fs.existsSync(aclFile) && !dryRunArg) {
+  console.error('');
+  console.error('⚠️  安全警告 ──────────────────────────────────────────────');
+  console.error('   未找到 email-acl.yaml — 所有发件人均可触发 AI CLI！');
+  console.error('   当前使用的 Profiles 可能包含危险执行权限。');
+  console.error('   强烈建议：运行 agently-mail init 生成配置并设置 allowed_senders。');
+  console.error('────────────────────────────────────────────────────────');
+  console.error('');
+}
 
 const { createEmailBridge } = require('../src/index');
 
