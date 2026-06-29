@@ -189,3 +189,25 @@ textarea.input { resize: vertical; min-height: 80px; font-family: var(--font-mon
   to { opacity: 1; transform: translateY(0); }
 }
 .fade-up { animation: fadeUp 0.25s ease-out both; }
+
+/* Mail body rendering (thread view) */
+.mail-body { font-size: 13px; line-height: 1.6; color: var(--text); word-wrap: break-word; }
+.mail-body p { margin: 0 0 10px; }
+.mail-body p:last-child { margin-bottom: 0; }
+.mail-body h1, .mail-body h2, .mail-body h3 { margin: 14px 0 8px; font-size: 15px; font-weight: 600; }
+.mail-body ul, .mail-body ol { margin: 0 0 10px; padding-left: 22px; }
+.mail-body li { margin: 2px 0; }
+.mail-body blockquote {
+  margin: 8px 0; padding: 6px 12px;
+  border-left: 3px solid var(--border); color: var(--text-muted);
+}
+.mail-body pre, .mail-body code {
+  font-family: var(--font-mono); font-size: 12px;
+  background: var(--bg); border-radius: 4px;
+}
+.mail-body pre { padding: 10px 12px; overflow-x: auto; }
+.mail-body code { padding: 1px 5px; }
+.mail-body img { max-width: 100%; border-radius: 6px; }
+.mail-body a { color: var(--accent); }
+.mail-body table { border-collapse: collapse; }
+.mail-body th, .mail-body td { border: 1px solid var(--border); padding: 6px 10px; }

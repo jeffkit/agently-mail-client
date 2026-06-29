@@ -1,10 +1,13 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Sidebar } from './components/Sidebar';
-import { Overview }   from './pages/Overview';
-import { History }    from './pages/History';
-import { Profiles }   from './pages/Profiles';
-import { ACL }        from './pages/ACL';
+import { Overview } from './pages/Overview';
+import { Inbox }    from './pages/Inbox';
+import { Thread }   from './pages/Thread';
+import { Compose }  from './pages/Compose';
+import { History }  from './pages/History';
+import { Profiles } from './pages/Profiles';
+import { ACL }      from './pages/ACL';
 import { BatchQueue } from './pages/BatchQueue';
 import { DeniedLog }  from './pages/DeniedLog';
 import { useState as useApiState } from './hooks/useApi';
@@ -20,12 +23,15 @@ function Layout() {
       <Sidebar pollAt={data?.lastPollAt} />
       <main style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)' }}>
         <Routes>
-          <Route path="/"         element={<Overview />} />
-          <Route path="/history"  element={<History />} />
-          <Route path="/profiles" element={<Profiles />} />
-          <Route path="/acl"      element={<ACL />} />
-          <Route path="/queue"    element={<BatchQueue />} />
-          <Route path="/denied"   element={<DeniedLog />} />
+          <Route path="/"                 element={<Overview />} />
+          <Route path="/inbox"            element={<Inbox />} />
+          <Route path="/inbox/:threadRoot" element={<Thread />} />
+          <Route path="/compose"          element={<Compose />} />
+          <Route path="/history"          element={<History />} />
+          <Route path="/profiles"         element={<Profiles />} />
+          <Route path="/acl"              element={<ACL />} />
+          <Route path="/queue"            element={<BatchQueue />} />
+          <Route path="/denied"           element={<DeniedLog />} />
         </Routes>
       </main>
     </div>

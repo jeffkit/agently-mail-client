@@ -72,6 +72,7 @@ The only contract between the dispatcher and a profile. Any program that reads e
 |------|-------|-----|
 | Conversation history (`{role, content}` turns) | `~/.agentproc/sessions/<sid>.jsonl` | Managed by `agentproc` lib — agentproc's standard path |
 | CLI-internal session id (e.g. `claude --resume <id>`) | `~/.agentproc/email-sessions/<sid>.json` | Sidecar JSON, one per (email thread × profile) |
+| Mail archive (full inbox/thread bodies for dashboard) | `~/.agently-mail-client/mail-archive.jsonl` | Append-only JSONL, fed by bridge `read`/`reply` + dashboard compose |
 | Pending/retry queue, denied log, dynamic ACL, poll cursor | `~/.agently-mail-client/` | Bridge's own state |
 
 The session id is computed from the **email thread root** (References[0] → In-Reply-To → own Message-ID) combined with the profile name, so all replies in one thread share conversation context.
@@ -93,6 +94,13 @@ All implement session resume + a fallback retry that starts a fresh session if t
 ACL merging (in `src/acl-config.js`): `acl-dynamic.json` (runtime, admin-controlled) is layered on top of the static yaml. Dynamic `allowed` evicts from merged `denied`; admin_senders / deny_action / report settings come only from the static file.
 
 Admin commands (`/allow`, `/deny`, `/reset`, `/status`) are sent in the email body from an `admin_senders` address; handled by `src/admin-handler.js`, which bypasses the normal dispatch path.
+
+## Dashboard (管理台)
+
+`src/dashboard.js` serves a built React SPA (`dashboard/`) plus a JSON API on `127.0.0.1:3030`. It is **read-mostly**; ACL/profile mutations write to the yaml/dynamic files, and the bridge hot-reloads the profiles yaml.
+
+- **Inbox / thread view** (`/inbox`, `/inbox/:threadRoot`): backed by the **mail archive** (`src/mail-archive.js`, `~/.agently-mail-client/mail-archive.jsonl`). The archive is populated in two ways: (1) the bridge archives every `read()`/`reply()` result via `readAndArchive`/`replyAndArchive` helpers in `src/index.js`; (2) `GET /api/message/:id` live-`+read`s and caches when a message isn't archived yet. Thread grouping uses `references[0] || in_reply_to || rfc_message_id` (raw, no hash — same root as `_sessionId` but without the per-profile hash so the inbox shows the full thread across profiles). The list view is **archive-driven** (no auto-poll) to protect the 10 req/min RPM quota.
+- **Compose** (`/compose`): `POST /api/send` / `/api/reply` / `/api/forward` wrap `AgentlyMailClient` and archive the outgoing mail (`source: 'dashboard'`). All live CLI calls consult the bridge-persisted `rpm-stats.json` and return 429 when the budget is low, since the dashboard is a separate process with its own token bucket.
 
 ## Editing notes
 

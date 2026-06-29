@@ -5,7 +5,15 @@ const fmt = (iso) =>
   iso ? new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '—';
 
 function StatusBadge({ entry }) {
-  const { replied, retries } = entry;
+  const { replied, retries, denied, deny_reason } = entry;
+  if (denied) {
+    return (
+      <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+        <span className="badge badge-red">已拦截</span>
+        {deny_reason && <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{deny_reason}</span>}
+      </span>
+    );
+  }
   if (replied && retries > 0) return <span className="badge badge-yellow">重试后回复</span>;
   if (replied)                return <span className="badge badge-green">已回复</span>;
   if (retries > 0)            return <span className="badge badge-red">失败</span>;
@@ -25,7 +33,7 @@ export function History() {
   return (
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h1 style={{ fontSize: 20, fontWeight: 600 }}>邮件历史</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 600 }}>处理日志</h1>
         <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>共 {entries.length} 条</span>
       </div>
 

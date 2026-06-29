@@ -1,17 +1,20 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
-  LayoutDashboard, Mail, Users, ShieldCheck, Clock, Ban, Sun, Moon,
+  LayoutDashboard, Inbox as InboxIcon, Pencil, ClipboardList,
+  Users, ShieldCheck, Clock, Ban, Sun, Moon,
 } from 'lucide-react';
 import { useMe } from '../hooks/useApi';
 
 const NAV = [
   { to: '/',         icon: LayoutDashboard, label: '概览' },
-  { to: '/history',  icon: Mail,            label: '邮件历史' },
-  { to: '/profiles', icon: Users,           label: 'Profile 路由' },
-  { to: '/acl',      icon: ShieldCheck,     label: '访问控制' },
-  { to: '/queue',    icon: Clock,           label: '批处理队列' },
-  { to: '/denied',   icon: Ban,             label: '拦截记录' },
+  { to: '/inbox',    icon: InboxIcon,        label: '收件箱' },
+  { to: '/compose',  icon: Pencil,           label: '写邮件' },
+  { to: '/history',  icon: ClipboardList,    label: '处理日志' },
+  { to: '/profiles', icon: Users,            label: 'Profile 路由' },
+  { to: '/acl',      icon: ShieldCheck,      label: '访问控制' },
+  { to: '/queue',    icon: Clock,            label: '批处理队列' },
+  { to: '/denied',   icon: Ban,              label: '拦截记录' },
 ];
 
 function NavItem({ to, icon: Icon, label }) {

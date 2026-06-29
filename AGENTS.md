@@ -17,6 +17,7 @@ agently-mail-client/
     denied-log.js       ACL 拒绝日志
     admin-handler.js    Admin 命令处理
     pending-store.js    重试队列持久化
+    mail-archive.js     邮件归档（inbox/thread 视图数据源）
   profiles/
     _stream_json.js     stream-json CLI 共享 helper（claude/cursor/codebuddy）
     claude-code.js      Claude Code CLI (claude)
@@ -61,7 +62,8 @@ Profile 通过 stdout 输出（可选）：
 数据存储：
 - 对话历史：`~/.agentproc/sessions/<sid>.jsonl`（agentproc 标准路径）
 - CLI session id（如 claude --resume id）：`~/.agentproc/email-sessions/<sid>.json`
-- 待重试队列、拒绝日志、ACL 动态配置：`~/.agently-mail-client/`
+- 邮件归档（dashboard inbox/thread 数据源）：`~/.agently-mail-client/mail-archive.jsonl`
+- 待重试队列、拒绝日志、ACL 动态配置、poll 游标：`~/.agently-mail-client/`
 
 ## 内置 Profile 说明
 
