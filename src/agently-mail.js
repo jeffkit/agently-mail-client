@@ -157,6 +157,36 @@ async function throttleRpm() {
 }
 
 // ---------------------------------------------------------------------------
+// Upstream call logger — every agently-cli invocation is recorded to a
+// JSONL file for offline rate-limit forensics. Append-only, non-blocking.
+// Toggle: AGENTLY_UPSTREAM_LOG=0 disables. File: ~/.agently-mail-client/upstream-calls.jsonl
+// ---------------------------------------------------------------------------
+
+const UPSTREAM_LOG_ENABLED =
+  process.env.AGENTLY_UPSTREAM_LOG !== '0';
+const UPSTREAM_LOG_FILE = path.join(
+  os.homedir(), '.agently-mail-client', 'upstream-calls.jsonl',
+);
+let _upstreamSeq = 0;
+let _upstreamWriteQueue = Promise.resolve();
+
+function _callerTag() {
+  if (process.env.AGENTLY_CALLER) return process.env.AGENTLY_CALLER;
+  // bin/cli.js dashboard ...  → dashboard ; bin/cli.js --config ... → bridge
+  const argv = (process.argv || []).slice(1).join(' ');
+  if (/\bdashboard\b/.test(argv)) return 'dashboard';
+  return 'bridge';
+}
+
+function _appendUpstreamLog(record) {
+  if (!UPSTREAM_LOG_ENABLED) return;
+  // serialize appends so concurrent calls never interleave lines
+  _upstreamWriteQueue = _upstreamWriteQueue
+    .then(() => fs.promises.appendFile(UPSTREAM_LOG_FILE, JSON.stringify(record) + '\n'))
+    .catch(() => { /* logging is best-effort */ });
+}
+
+// ---------------------------------------------------------------------------
 // Low-level CLI runner (async — never blocks the event loop)
 // ---------------------------------------------------------------------------
 
@@ -168,26 +198,59 @@ async function throttleRpm() {
  * @returns {Promise<unknown>} data field from the JSON envelope
  */
 async function runCli(args) {
+  const throttleStart = Date.now();
   await throttleRpm();
+  const throttleWaitMs = Date.now() - throttleStart;
+
+  const startMs = Date.now();
+  const startedAt = new Date(startMs).toISOString();
+  const seq = ++_upstreamSeq;
+  const caller = _callerTag();
+  let status = 'ok';
+  let exitCode = null;
+  let serverMsg = null;
+
   let result;
   try {
     result = await spawnWithTimeout('agently-cli', args, { timeoutMs: CLI_TIMEOUT_MS });
   } catch (err) {
+    status = 'spawn_fail';
+    exitCode = -1;
+    serverMsg = err?.message || String(err);
+    _appendUpstreamLog({
+      ts: startedAt, epoch_ms: startMs, seq, caller, pid: process.pid,
+      args, throttle_wait_ms: throttleWaitMs, duration_ms: Date.now() - startMs,
+      status, exit_code: exitCode, server_msg: serverMsg, rpm: getRpmStats(),
+    });
     throw new AgentlyMailError(`Failed to spawn agently-cli: ${err.message}`, -1);
   }
 
   if (result.timedOut) {
+    status = 'timeout';
+    exitCode = -1;
+    _appendUpstreamLog({
+      ts: startedAt, epoch_ms: startMs, seq, caller, pid: process.pid,
+      args, throttle_wait_ms: throttleWaitMs, duration_ms: Date.now() - startMs,
+      status, exit_code: exitCode, server_msg: `timed out after ${CLI_TIMEOUT_MS}ms`, rpm: getRpmStats(),
+    });
     throw new AgentlyMailError(
       `agently-cli timed out after ${CLI_TIMEOUT_MS}ms (args: ${args.slice(0, 3).join(' ')})`,
       -1,
     );
   }
 
-  const exitCode = result.code ?? -1;
+  exitCode = result.code ?? -1;
   let envelope;
   try {
     envelope = JSON.parse(result.stdout || '{}');
   } catch {
+    status = 'non_json';
+    serverMsg = (result.stdout || '').slice(0, 200);
+    _appendUpstreamLog({
+      ts: startedAt, epoch_ms: startMs, seq, caller, pid: process.pid,
+      args, throttle_wait_ms: throttleWaitMs, duration_ms: Date.now() - startMs,
+      status, exit_code: exitCode, server_msg: serverMsg, rpm: getRpmStats(),
+    });
     throw new AgentlyMailError(
       `agently-cli returned non-JSON output (exit ${exitCode}): ${result.stdout?.slice(0, 200)}`,
       exitCode,
@@ -197,12 +260,26 @@ async function runCli(args) {
   if (exitCode !== 0) {
     const msg =
       envelope?.error?.message || envelope?.message || `exit code ${exitCode}`;
+    status = /429|rate.?limit/i.test(msg) ? '429' : 'error';
+    serverMsg = msg;
+    _appendUpstreamLog({
+      ts: startedAt, epoch_ms: startMs, seq, caller, pid: process.pid,
+      args, throttle_wait_ms: throttleWaitMs, duration_ms: Date.now() - startMs,
+      status, exit_code: exitCode, server_msg: serverMsg,
+      server_code: envelope?.error?.code ?? null, rpm: getRpmStats(),
+    });
     throw new AgentlyMailError(
       `agently-cli error (exit ${exitCode}): ${msg}`,
       exitCode,
       msg,
     );
   }
+
+  _appendUpstreamLog({
+    ts: startedAt, epoch_ms: startMs, seq, caller, pid: process.pid,
+    args, throttle_wait_ms: throttleWaitMs, duration_ms: Date.now() - startMs,
+    status, exit_code: exitCode, server_msg: null, rpm: getRpmStats(),
+  });
 
   return envelope.data;
 }
@@ -471,6 +548,8 @@ class AgentlyMailClient {
    * @param {boolean} [options.adaptive=true]      Enable adaptive interval (default true)
    * @param {number}  [options.minIntervalMs=60000] Min interval when emails are found
    * @param {number}  [options.stepFactor=1.5]     Idle cool-down multiplier per empty tick
+   * @param {number}  [options.startDelayMs=0]     Delay before the first tick (resume cadence)
+   * @param {(nextDueMs: number) => void} [options.onSchedule]  Notified whenever a tick is scheduled
    * @returns {{ stop: () => void, currentIntervalMs: () => number }}
    */
   poll(intervalMs, handler, options = {}) {
@@ -479,6 +558,8 @@ class AgentlyMailClient {
     const minIntervalMs    = options.minIntervalMs ?? 60_000;  // 1 min floor
     const stepFactor       = options.stepFactor ?? 1.5;
     const maxIntervalMs    = intervalMs; // configured value is the ceiling
+    const startDelayMs     = Math.max(0, options.startDelayMs ?? 0);
+    const onSchedule       = typeof options.onSchedule === 'function' ? options.onSchedule : null;
 
     // Start from now if no saved cursor: don't reprocess the entire inbox on first run
     let afterTimestamp = options.afterTimestamp || new Date().toISOString();
@@ -496,12 +577,21 @@ class AgentlyMailClient {
     let backoffLevel = 0;
     const BACKOFF_MAX = 4;
 
+    // Schedule the next tick and notify the bridge so it can persist the due time.
+    function scheduleTick(delayMs) {
+      const d = Math.max(0, delayMs);
+      timer = setTimeout(tick, d);
+      if (onSchedule) {
+        try { onSchedule(Date.now() + d); } catch { /* best-effort */ }
+      }
+    }
+
     const tick = async () => {
       if (stopped) return;
       if (ticking) {
         // Previous tick is still running (slow handler / AI profile took too long).
         // Schedule retry instead of overlapping — do NOT reset the adaptive interval.
-        timer = setTimeout(tick, currentInterval);
+        scheduleTick(currentInterval);
         return;
       }
       ticking = true;
@@ -553,7 +643,7 @@ class AgentlyMailClient {
           process.stderr.write(
             `[agently-mail] Rate limited (429), backoff level ${backoffLevel}: next poll in ${Math.round(backoffMs / 1000)}s\n`,
           );
-          if (!stopped) timer = setTimeout(tick, backoffMs);
+          if (!stopped) scheduleTick(backoffMs);
           return;
         }
         process.stderr.write(`[agently-mail] poll error: ${err?.message || err}\n`);
@@ -577,11 +667,14 @@ class AgentlyMailClient {
           currentInterval = maxIntervalMs;
         }
         timer = setTimeout(tick, currentInterval);
+        if (onSchedule) {
+          try { onSchedule(Date.now() + currentInterval); } catch { /* best-effort */ }
+        }
       }
     };
 
-    // Start immediately
-    tick();
+    // Start after a startup delay (resume cadence) instead of an immediate burst.
+    scheduleTick(startDelayMs);
 
     return {
       stop() {

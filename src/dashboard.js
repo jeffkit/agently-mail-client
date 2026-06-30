@@ -104,12 +104,31 @@ const DIST_DIR = path.resolve(__dirname, 'dashboard-dist');
 const ME_CACHE_TTL_MS = 5 * 60 * 1000;
 let _meCache = null;
 let _meCacheAt = 0;
+let _accountStoreDir = path.join(os.homedir(), '.agently-mail-client');
+const { readAccountInfo, writeAccountInfo } = require('./account-info');
+
+/**
+ * 账号信息优先走本地 account-info.json（由 bridge 维护），dashboard 不主动打上游。
+ * 仅当本地缓存不存在时，才回退到一次 client.me() 并落盘。
+ * 进程内 5 分钟缓存作为二级缓存，避免反复读盘。
+ */
 async function getAccountInfo() {
   if (_meCache && Date.now() - _meCacheAt < ME_CACHE_TTL_MS) return _meCache;
+
+  // 1) 本地磁盘缓存（bridge 写入）
+  const disk = readAccountInfo(_accountStoreDir);
+  if (disk) {
+    _meCache = disk;
+    _meCacheAt = Date.now();
+    return disk;
+  }
+
+  // 2) 无磁盘缓存：回退打一次上游（首次/bridge 未运行过），成功则落盘供后续复用
   try {
     const { AgentlyMailClient } = require('./agently-mail');
     const client = new AgentlyMailClient();
     const info = await client.me();
+    writeAccountInfo(_accountStoreDir, info);
     _meCache = info;
     _meCacheAt = Date.now();
     return info;
@@ -224,6 +243,7 @@ function startDashboard(opts = {}) {
   const host = opts.host || '127.0.0.1';
 
   const storeDir = opts.storeDir || path.join(os.homedir(), '.agently-mail-client');
+  _accountStoreDir = storeDir;
   const token = getOrCreateToken(storeDir);
 
   const server = http.createServer(async (req, res) => {

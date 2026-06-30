@@ -12,7 +12,7 @@
     "dashboard": "node bin/cli.js dashboard",
     "dashboard:dev": "cd dashboard && pnpm dev",
     "dashboard:build": "cd dashboard && pnpm build",
-    "test": "node --test tests/test-sender-acl.js tests/test-acl-system.js tests/test-dispatcher-clean.js tests/test-mail-archive.js tests/test-pending-store.js tests/test-admin-handler.js tests/test-dashboard-auth.js tests/test-batch-store.js tests/test-schedule-runner.js",
+    "test": "node --test tests/test-sender-acl.js tests/test-acl-system.js tests/test-dispatcher-clean.js tests/test-mail-archive.js tests/test-pending-store.js tests/test-admin-handler.js tests/test-dashboard-auth.js tests/test-batch-store.js tests/test-schedule-runner.js tests/test-rate-limit-recovery.js",
     "test:manual": "node tests/test-html-conversion.js && node tests/test-integration.js",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
