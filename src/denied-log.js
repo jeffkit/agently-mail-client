@@ -82,6 +82,21 @@ class DeniedLog {
   }
 
   /**
+   * Return all entries sorted by received_at desc, up to `limit`.
+   * Prefer this over reading denied-log.json directly from outside this class.
+   *
+   * @param {object} [opts]
+   * @param {number} [opts.limit=50]
+   * @returns {object[]}
+   */
+  getAllEntries({ limit = 50 } = {}) {
+    this._load();
+    return [...this._data]
+      .sort((a, b) => new Date(b.received_at) - new Date(a.received_at))
+      .slice(0, limit);
+  }
+
+  /**
    * Remove entries that are reported and older than RETENTION_DAYS.
    */
   cleanup() {

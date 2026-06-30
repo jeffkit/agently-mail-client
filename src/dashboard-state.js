@@ -86,12 +86,9 @@ function readState(opts = {}) {
   // 也会被 markReplied 以阻止重试，单看 replied 无法区分"真回复"与"被拦截"）。
   const deniedMap = new Map();
   try {
-    const dlPath = path.join(storeDir, 'denied-log.json');
-    if (fs.existsSync(dlPath)) {
-      const dl = JSON.parse(fs.readFileSync(dlPath, 'utf8'));
-      for (const d of (Array.isArray(dl) ? dl : [])) {
-        if (d && d.message_id) deniedMap.set(d.message_id, d.reason || 'ACL');
-      }
+    const dl = new DeniedLog(path.join(storeDir, 'denied-log.json'));
+    for (const d of dl.getAllEntries()) {
+      if (d.message_id) deniedMap.set(d.message_id, d.reason || 'ACL');
     }
   } catch {
     // denied-log 缺失/损坏不影响 pending 读取
@@ -100,18 +97,12 @@ function readState(opts = {}) {
   let pending = { queued: 0, entries: [] };
   try {
     const store = new PendingStore(path.join(storeDir, 'pending.json'));
-    const all = store.getPending ? store.getPending() : [];
-    const raw = fs.existsSync(path.join(storeDir, 'pending.json'))
-      ? JSON.parse(fs.readFileSync(path.join(storeDir, 'pending.json'), 'utf8'))
-      : {};
-    const entries = Object.values(raw)
-      .sort((a, b) => new Date(b.added_at) - new Date(a.added_at))
-      .slice(0, 100)
-      .map((e) => {
-        const reason = deniedMap.has(e.message_id) ? deniedMap.get(e.message_id) : null;
-        return reason ? { ...e, denied: true, deny_reason: reason } : e;
-      });
-    pending = { queued: all.length, entries };
+    const queued = store.getPending();
+    const entries = store.getAllEntries({ limit: 100 }).map((e) => {
+      const reason = deniedMap.has(e.message_id) ? deniedMap.get(e.message_id) : null;
+      return reason ? { ...e, denied: true, deny_reason: reason } : e;
+    });
+    pending = { queued: queued.length, entries };
   } catch {
     // 文件不存在时忽略
   }
@@ -131,14 +122,7 @@ function readState(opts = {}) {
   let denied = { unreported: 0, entries: [] };
   try {
     const log = new DeniedLog(path.join(storeDir, 'denied-log.json'));
-    const unreported = log.getUnreported ? log.getUnreported() : [];
-    const raw = fs.existsSync(path.join(storeDir, 'denied-log.json'))
-      ? JSON.parse(fs.readFileSync(path.join(storeDir, 'denied-log.json'), 'utf8'))
-      : [];
-    const entries = (Array.isArray(raw) ? raw : [])
-      .sort((a, b) => new Date(b.received_at) - new Date(a.received_at))
-      .slice(0, 50);
-    denied = { unreported: unreported.length, entries };
+    denied = { unreported: log.getUnreported().length, entries: log.getAllEntries({ limit: 50 }) };
   } catch {
     // 无被拒记录时忽略
   }

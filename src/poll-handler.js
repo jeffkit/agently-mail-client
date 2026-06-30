@@ -57,7 +57,7 @@ function createPollHandler(deps) {
     try {
       // Skip emails we sent ourselves (prevents reply loops)
       if (filterSelfSent) {
-        const ownAddresses = getOwnAddresses();
+        const ownAddresses = await getOwnAddresses();
         const senderNorm = senderEmail.toLowerCase();
         if (ownAddresses.has(senderNorm)) {
           log(tid, `Skipping self-sent: "${subject}" (${message_id})`);
@@ -72,9 +72,10 @@ function createPollHandler(deps) {
         try {
           fullMsg = await readAndArchive(client, message_id);
         } catch (err) {
-          log(tid, `Admin message read failed: ${err.message} — will retry on next sweep`);
-          pending.add(msg);
-          pending.markFailed(message_id, `admin read failed: ${err.message}`);
+          // Admin messages do NOT enter the pending queue — retry sweep would treat
+          // them as ordinary mail and dispatch to a profile, leaking intent to admin.
+          // Lost admin commands must be re-sent manually.
+          log(tid, `Admin message read failed: ${err.message} — admin must re-send command`);
           return;
         }
         const body = fullMsg ? _plainBody(fullMsg) : '';

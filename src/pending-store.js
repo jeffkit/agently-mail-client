@@ -74,13 +74,14 @@ class PendingStore {
   _save() {
     // 原子写：tmp + rename，避免 retry sweep + poll handler 并发写入互相覆盖
     const dir = path.dirname(this.storeFile);
+    const tmp = path.join(dir, `.pending.${process.pid}.${Date.now()}.tmp`);
     try {
       fs.mkdirSync(dir, { recursive: true });
-      const tmp = path.join(dir, `.pending.${process.pid}.${Date.now()}.tmp`);
       fs.writeFileSync(tmp, JSON.stringify(this._data, null, 2), 'utf8');
       fs.renameSync(tmp, this.storeFile);
     } catch (err) {
       process.stderr.write(`[pending-store] Failed to save: ${err.message}\n`);
+      try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
     }
   }
 
@@ -170,6 +171,21 @@ class PendingStore {
       }
       return true;
     });
+  }
+
+  /**
+   * Return all raw entries sorted by added_at desc, up to `limit`.
+   * Prefer this over reading pending.json directly from outside this class.
+   *
+   * @param {object} [opts]
+   * @param {number} [opts.limit=100]
+   * @returns {object[]}
+   */
+  getAllEntries({ limit = 100 } = {}) {
+    this._load();
+    return Object.values(this._data)
+      .sort((a, b) => new Date(b.added_at) - new Date(a.added_at))
+      .slice(0, limit);
   }
 
   /**

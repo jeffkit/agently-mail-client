@@ -16,6 +16,7 @@
  * });
  */
 
+const { randomBytes } = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -127,13 +128,14 @@ function createEmailBridge(options = {}) {
   }
 
   function saveCursor(ts) {
+    const tmp = `${cursorFile}.${process.pid}.tmp`;
     try {
       fs.mkdirSync(storeDir, { recursive: true });
-      const tmp = `${cursorFile}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify({ afterTimestamp: ts }, null, 2), 'utf8');
       fs.renameSync(tmp, cursorFile);
     } catch (err) {
       process.stderr.write(`[email-bridge] Failed to save poll cursor: ${err.message}\n`);
+      try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
     }
   }
 
@@ -232,12 +234,14 @@ function createEmailBridge(options = {}) {
     }
   } catch {}
 
-  const aclDynamicFile = path.join(storeDir, 'acl-dynamic.json');
+  // Watch the store directory for acl-dynamic.json changes.
+  // Watching the file itself would miss the initial creation (file doesn't exist at startup).
   try {
-    if (fs.existsSync(aclDynamicFile)) {
-      aclDynamicWatcher = fs.watch(aclDynamicFile, scheduleAclReload);
-      aclDynamicWatcher.on('error', () => {});
-    }
+    fs.mkdirSync(storeDir, { recursive: true });
+    aclDynamicWatcher = fs.watch(storeDir, (event, filename) => {
+      if (filename === 'acl-dynamic.json') scheduleAclReload();
+    });
+    aclDynamicWatcher.on('error', () => {});
   } catch {}
 
   // ── Startup auth check ────────────────────────────────────────────────────────
@@ -277,13 +281,30 @@ function createEmailBridge(options = {}) {
   })();
 
   // ── Poll ──────────────────────────────────────────────────────────────────────
+  // Refresh ownAddresses lazily when empty (e.g. rate-limited at startup).
+  // Retry at most once per 10 minutes to avoid burning RPM quota.
+  let ownAddressRefreshAt = 0;
+  const OWN_ADDR_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+  async function getOwnAddressesCached() {
+    if (ownAddresses.size > 0) return ownAddresses;
+    if (Date.now() - ownAddressRefreshAt < OWN_ADDR_REFRESH_INTERVAL_MS) return ownAddresses;
+    ownAddressRefreshAt = Date.now();
+    ownAddresses = await getOwnAddresses(mail);
+    if (ownAddresses.size > 0) {
+      process.stderr.write(
+        `[email-bridge] Self-sent filter refreshed: ${[...ownAddresses].join(', ')}\n`,
+      );
+    }
+    return ownAddresses;
+  }
+
   const pollCallback = createPollHandler({
     aclCfg, acl, admin, batchHandler,
     pending, dispatchAndReply, handleDenied, readAndArchive,
     filterSelfSent,
-    getOwnAddresses: () => ownAddresses,
+    getOwnAddresses: getOwnAddressesCached,
     log,
-    traceId: () => Math.random().toString(16).slice(2, 8),
+    traceId: () => randomBytes(3).toString('hex'),
   });
 
   const savedCursor = loadCursor();
@@ -302,7 +323,9 @@ function createEmailBridge(options = {}) {
   // ── Retry sweep ───────────────────────────────────────────────────────────────
   const runRetrySweep = createRetrySweep({ pending, mail, dispatchAndReply, log });
   let retryTimer = null;
-  setTimeout(() => {
+  // Save the initial setTimeout handle so stop() can cancel it before it fires.
+  // Without this, calling stop() immediately after start leaks the interval forever.
+  const retryInitTimer = setTimeout(() => {
     runRetrySweep();
     retryTimer = setInterval(runRetrySweep, pollIntervalMs);
   }, Math.floor(pollIntervalMs / 2));
@@ -332,6 +355,7 @@ function createEmailBridge(options = {}) {
     poller.stop();
     admin.stopReportScheduler();
     if (batchHandler) batchHandler.stop();
+    clearTimeout(retryInitTimer);
     if (retryTimer) clearInterval(retryTimer);
     scheduleRunner.stop();
     if (reloadTimer) clearTimeout(reloadTimer);

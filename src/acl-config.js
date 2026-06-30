@@ -87,7 +87,13 @@ class AclConfig {
   constructor(opts = {}) {
     this._aclConfigFile = opts.aclConfigFile || null;
     this._dynamicFile   = opts.dynamicFile || DEFAULT_DYNAMIC_FILE;
-    this._static        = this._loadStatic(this._aclConfigFile);
+    try {
+      this._static = this._loadStatic(this._aclConfigFile);
+    } catch (err) {
+      // Fail-fast: a broken ACL YAML would silently open access to everyone.
+      process.stderr.write(`[acl-config] Fatal: cannot parse ACL config ${this._aclConfigFile}: ${err.message}\n`);
+      throw err;
+    }
     this._dynamic       = this._loadDynamic();
     this._merged        = this._merge();
 
@@ -101,9 +107,14 @@ class AclConfig {
    * Hot-reload: 重新读取静态 yaml + 动态文件并原地合并。
    * 已持有的 AclConfig / SenderAcl / AdminHandler 引用通过 getter 实时读取，
    * 无需重建——下次 checkGlobal / isAdmin 即用新规则。
+   * 静态 yaml 解析失败时保留旧值（不降级为开放访问）。
    */
   reload() {
-    this._static  = this._loadStatic(this._aclConfigFile);
+    try {
+      this._static = this._loadStatic(this._aclConfigFile);
+    } catch (err) {
+      process.stderr.write(`[acl-config] Hot-reload: keeping previous static config (${err.message})\n`);
+    }
     this._dynamic = this._loadDynamic();
     this._merged  = this._merge();
     for (const w of validateAdminSenders(this.adminSenders)) {
@@ -187,12 +198,10 @@ class AclConfig {
 
   _loadStatic(aclConfigFile) {
     if (!aclConfigFile) return {};
-    try {
-      return loadAclConfig(aclConfigFile);
-    } catch (err) {
-      process.stderr.write(`[acl-config] Cannot load ${aclConfigFile}: ${err.message}\n`);
-      return {};
-    }
+    // Throws on parse error — caller decides whether to fail-fast (constructor)
+    // or retain the previous value (reload). Silently returning {} would downgrade
+    // ACL to open-access, which is the worst-case security failure mode.
+    return loadAclConfig(aclConfigFile);
   }
 
   _loadDynamic() {
@@ -214,9 +223,9 @@ class AclConfig {
   _saveDynamic(data) {
     // 原子写：先写临时文件再 rename，避免并发 admin 指令互相覆盖造成最后写入获胜
     const dir = path.dirname(this._dynamicFile);
+    const tmp = path.join(dir, `.acl-dynamic.${process.pid}.${Date.now()}.tmp`);
     try {
       fs.mkdirSync(dir, { recursive: true });
-      const tmp = path.join(dir, `.acl-dynamic.${process.pid}.${Date.now()}.tmp`);
       fs.writeFileSync(
         tmp,
         JSON.stringify({ allowed: data.allowed, denied: data.denied }, null, 2),
@@ -225,6 +234,7 @@ class AclConfig {
       fs.renameSync(tmp, this._dynamicFile);
     } catch (err) {
       process.stderr.write(`[acl-config] Cannot save dynamic ACL: ${err.message}\n`);
+      try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
     }
   }
 

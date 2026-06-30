@@ -99,18 +99,22 @@ function getOrCreateToken(storeDir) {
 // Determine the static frontend dist directory (built React app)
 const DIST_DIR = path.resolve(__dirname, 'dashboard-dist');
 
-// Lazily-loaded and cached account info (calls agently-cli +me once per process)
+// Lazily-loaded and cached account info (calls agently-cli +me once per process).
+// TTL of 5 minutes so account switches after `agently-cli auth login` are picked up.
+const ME_CACHE_TTL_MS = 5 * 60 * 1000;
 let _meCache = null;
+let _meCacheAt = 0;
 async function getAccountInfo() {
-  if (_meCache) return _meCache;
+  if (_meCache && Date.now() - _meCacheAt < ME_CACHE_TTL_MS) return _meCache;
   try {
     const { AgentlyMailClient } = require('./agently-mail');
     const client = new AgentlyMailClient();
     const info = await client.me();
     _meCache = info;
+    _meCacheAt = Date.now();
     return info;
   } catch {
-    return null;
+    return _meCache || null; // return stale on error rather than null
   }
 }
 
@@ -177,16 +181,19 @@ function normalizeRecipients(val) {
 }
 
 function serveStatic(urlPath, res, token = '') {
-  // Security: prevent path traversal
-  const safe = urlPath.replace(/\.\./g, '').replace(/^\/+/, '');
-  const file = path.join(DIST_DIR, safe || 'index.html');
-  // Resolve the file, fallback to index.html for SPA routing
-  let target = file;
+  // Security: decode the URL and use path.resolve to canonicalize, then verify
+  // the result is inside DIST_DIR. String replace of ".." is insufficient
+  // because percent-encoded variants (%2e%2e) bypass naive string checks.
+  const decoded = decodeURIComponent((urlPath || '/').split('?')[0]);
+  const candidate = path.resolve(DIST_DIR, '.' + decoded);
+  const indexHtml = path.join(DIST_DIR, 'index.html');
+  // Fallback to index.html for SPA routing (non-existent paths or directories)
+  let target = candidate;
   if (!fs.existsSync(target) || fs.statSync(target).isDirectory()) {
-    target = path.join(DIST_DIR, 'index.html');
+    target = indexHtml;
   }
-  // Ensure target is inside DIST_DIR (belt-and-suspenders)
-  if (!target.startsWith(DIST_DIR + path.sep) && target !== path.join(DIST_DIR, 'index.html')) {
+  // Enforce DIST_DIR boundary after resolving symlinks / . and ..
+  if (target !== indexHtml && !target.startsWith(DIST_DIR + path.sep)) {
     res.writeHead(403); res.end(); return;
   }
   try {
@@ -317,8 +324,11 @@ function startDashboard(opts = {}) {
     // 所有 POST / DELETE 请求必须携带 X-Dashboard-Token 头。
     // React 应用从 window.__DASHBOARD_TOKEN__（注入 index.html）读取 token。
     if (req.method === 'POST' || req.method === 'DELETE') {
-      const provided = req.headers['x-dashboard-token'];
-      if (!provided || provided !== token) {
+      const provided = req.headers['x-dashboard-token'] || '';
+      const a = Buffer.from(provided);
+      const b = Buffer.from(token);
+      const valid = a.length === b.length && crypto.timingSafeEqual(a, b);
+      if (!valid) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: '未授权：缺少或无效的 X-Dashboard-Token 请求头' }));
         return;
@@ -614,6 +624,9 @@ function startDashboard(opts = {}) {
     res.writeHead(405);
     res.end('Method Not Allowed');
   });
+
+  // Warm up the me-cache in the background so the first /api/me request is instant.
+  getAccountInfo().catch(() => {});
 
   server.listen(port, host, () => {
     const url = `http://${host}:${port}`;

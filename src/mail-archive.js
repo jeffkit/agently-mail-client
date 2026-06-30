@@ -46,6 +46,12 @@ function computeThreadRoot(msg) {
   );
 }
 
+// Maximum number of records held in memory. Older records beyond this limit
+// are evicted from the in-process index (they remain on disk). This caps
+// memory usage as the JSONL file grows over time; a future SQLite migration
+// would lift this restriction cleanly.
+const MAX_RECORDS_IN_MEMORY = 5000;
+
 class MailArchive {
   /**
    * @param {string} [archiveFile]  自定义归档文件路径
@@ -53,7 +59,7 @@ class MailArchive {
   constructor(archiveFile = DEFAULT_ARCHIVE_FILE) {
     this.archiveFile = archiveFile;
     this._loaded = false;
-    this._records = [];          // 所有记录（保持写入顺序）
+    this._records = [];          // 所有记录（保持写入顺序，上限 MAX_RECORDS_IN_MEMORY）
     this._byMessageId = new Map(); // direction|message_id → record
     this._byThread = new Map();    // thread_root → record[]
   }
@@ -70,11 +76,18 @@ class MailArchive {
       if (!fs.existsSync(this.archiveFile)) return;
       const raw = fs.readFileSync(this.archiveFile, 'utf8');
       const lines = raw.split('\n');
+      // Parse all lines but only index the most recent MAX_RECORDS_IN_MEMORY to cap memory.
+      // Older records stay on disk and can be retrieved by re-reading the file if needed.
+      const parsed = [];
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        let rec;
-        try { rec = JSON.parse(trimmed); } catch { continue; }
+        try { parsed.push(JSON.parse(trimmed)); } catch { /* skip malformed lines */ }
+      }
+      const toIndex = parsed.length > MAX_RECORDS_IN_MEMORY
+        ? parsed.slice(parsed.length - MAX_RECORDS_IN_MEMORY)
+        : parsed;
+      for (const rec of toIndex) {
         this._index(rec);
       }
     } catch (err) {

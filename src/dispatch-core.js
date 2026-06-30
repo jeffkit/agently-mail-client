@@ -8,6 +8,7 @@
  * 与 index.js 解耦：不直接引用任何 "全局" 状态，全部通过 deps 注入。
  */
 
+const { randomBytes } = require('crypto');
 const { matchesAny } = require('./sender-acl');
 const { convertMarkdownToHtml } = require('./dispatcher');
 const { computeThreadRoot } = require('./mail-archive');
@@ -32,7 +33,7 @@ function createDispatcher(deps) {
   const processingSet = new Set();
 
   function traceId() {
-    return Math.random().toString(16).slice(2, 8);
+    return randomBytes(3).toString('hex');
   }
 
   function log(tid, msg) {
@@ -97,11 +98,12 @@ function createDispatcher(deps) {
 
     deniedLog.record(msg, reason);
 
-    // Mark as done in pending store to prevent retry sweep re-processing
     pending.add(msg);
-    pending.markReplied(message_id);
 
-    // Archive the denied mail so it appears in the dashboard inbox view
+    // Archive first so the dashboard inbox shows the denied mail body.
+    // markReplied only after archive — if archive fails, the entry stays pending
+    // but the mail is already server-side-read, so we still mark it to avoid
+    // re-entering the dispatch path (denied-log already records the refusal).
     try {
       await readAndArchive(client, message_id);
     } catch (err) {
@@ -109,6 +111,9 @@ function createDispatcher(deps) {
         `[email-bridge] archive denied message failed for ${message_id}: ${err.message}\n`,
       );
     }
+
+    // Mark as done in pending store to prevent retry sweep re-processing
+    pending.markReplied(message_id);
 
     if (acl.denyAction === 'notify' && !dryRun) {
       const body = aclCfg.denyMessage ||
@@ -124,19 +129,24 @@ function createDispatcher(deps) {
 
   /**
    * Core dispatch-and-reply logic shared between new mail handler and retry sweep.
-   * Returns true on success, false on failure.
+   *
+   * Returns a status string:
+   *   'replied'  — profile ran and reply was sent (or dry-run)
+   *   'denied'   — per-profile ACL rejected the sender (no AI reply sent)
+   *   'skipped'  — already being processed by another concurrent call
+   *   'failed'   — read / profile / reply error; pending entry marked failed
    *
    * @param {string}  message_id
    * @param {string}  subject
    * @param {string}  fromEmail
    * @param {import('./agently-mail').AgentlyMailClient} client
    * @param {boolean} [isRetry=false]
-   * @returns {Promise<boolean>}
+   * @returns {Promise<'replied'|'denied'|'skipped'|'failed'>}
    */
   async function dispatchAndReply(message_id, subject, fromEmail, client, isRetry = false) {
     if (processingSet.has(message_id)) {
       log('', `Skipping duplicate dispatch for ${message_id} (already in progress)`);
-      return true;
+      return 'skipped';
     }
     processingSet.add(message_id);
     const tid = traceId();
@@ -150,7 +160,7 @@ function createDispatcher(deps) {
       } catch (err) {
         log(tid, `${tag} Failed to read ${message_id}: ${err.message}`);
         pending.markFailed(message_id, `read failed: ${err.message}`);
-        return false;
+        return 'failed';
       }
 
       // Resolve profile first so we can run per-profile ACL check
@@ -160,7 +170,7 @@ function createDispatcher(deps) {
       } catch (err) {
         log(tid, `${tag} Profile resolution failed: ${err.message}`);
         pending.markFailed(message_id, `profile resolve failed: ${err.message}`);
-        return false;
+        return 'failed';
       }
 
       // Per-profile ACL check (global ACL already passed in poll handler)
@@ -168,7 +178,7 @@ function createDispatcher(deps) {
         log(tid, `${tag} ACL denied profile "${resolvedProfile.profileName}" for ${fromEmail}`);
         const msgSummary = { message_id, subject, from: { email: fromEmail } };
         await handleDenied(client, msgSummary, `profile "${resolvedProfile.profileName}" not allowed`);
-        return true;
+        return 'denied';
       }
 
       let response, profileName;
@@ -178,7 +188,7 @@ function createDispatcher(deps) {
         const failedAt = new Date().toISOString();
         log(tid, `${tag} Dispatch failed for ${message_id} (profile=${resolvedProfile.profileName}) at ${failedAt}: ${err.message}`);
         pending.markFailed(message_id, `dispatch failed: ${err.message}`);
-        return false;
+        return 'failed';
       }
 
       log(tid, `${tag} Profile: ${profileName} → ${response.length} chars`);
@@ -192,13 +202,13 @@ function createDispatcher(deps) {
         } catch (err) {
           log(tid, `${tag} Reply failed for ${message_id}: ${err.message}`);
           pending.markFailed(message_id, `reply failed: ${err.message}`);
-          return false;
+          return 'failed';
         }
       } else {
         pending.markReplied(message_id);
         log(tid, `${tag} [DRY_RUN] Would reply: ${response.slice(0, 120)}`);
       }
-      return true;
+      return 'replied';
     } finally {
       processingSet.delete(message_id);
     }
