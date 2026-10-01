@@ -23,8 +23,9 @@
 **方式二：手动 3 步安装**
 
 ```bash
-# 1. 安装
+# 1. 安装（或用 Homebrew 安装，见 Formula/README.md）
 npm install -g agently-mail-client @tencent-qqmail/agently-cli
+#    或：brew install --formula https://raw.githubusercontent.com/jeffkit/agently-mail-client/main/Formula/agently-mail-client.rb
 
 # 2. 登录 Agently Mail
 agently-cli auth login

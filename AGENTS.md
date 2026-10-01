@@ -14,15 +14,28 @@ agently-mail-client/
   src/
     agently-mail.js     AgentlyMailClient — agently-cli subprocess 封装
     dispatcher.js       ProfileDispatcher — 路由 + 会话 + AgentProc P0 执行
+    dispatch-core.js    dispatch 核心工厂（poll/retry 共用）
+    poll-handler.js     邮件 poll 回调工厂
+    retry-sweep.js      重试扫描工厂
+    spawn.js            spawn 封装：超时 + session 降级重试
     index.js            包入口，导出 createEmailBridge / createProfile
     index.d.ts          TypeScript 类型定义
+    constants.js        跨模块共享常量
+    yaml-loader.js      统一 YAML 加载（js-yaml + fallback）
     acl-config.js       ACL 配置加载
     sender-acl.js       Sender ACL 检查
     denied-log.js       ACL 拒绝日志
     admin-handler.js    Admin 命令处理
     pending-store.js    重试队列持久化
+    batch-store.js      批处理待决策队列持久化
+    batch-handler.js    批处理摘要 + 主人指令调度
+    schedule-runner.js  定时任务调度器（node-cron）
+    builtin-handlers.js 内置定时任务 handler 集合
+    account-info.js     本机账号信息持久化共享
     mail-archive.js     邮件归档（inbox/thread 视图数据源）
     dashboard.js        内置 React SPA + JSON API（管理台）
+    dashboard-state.js  Dashboard 状态聚合读取
+    dashboard-ops.js    Dashboard 写操作（ACL/Profile）
   profiles/
     _stream_json.js     stream-json CLI 共享 helper（claude/cursor/codebuddy）
     claude-code.js      Claude Code CLI (claude)
@@ -38,6 +51,8 @@ agently-mail-client/
     sender-acl-design.md  Sender ACL 设计文档
   email-profiles.example.yaml  配置文件示例
   email-acl.example.yaml       ACL 配置示例
+  email-schedules.example.yaml 定时任务配置示例
+  Formula/                     Homebrew 安装 formula
 ```
 
 ## Commands
@@ -48,9 +63,8 @@ npm start
 node bin/cli.js
 DRY_RUN=1 POLL_INTERVAL_MS=120000 node bin/cli.js --config email-profiles.example.yaml
 
-# Run the test suite (node --test)
+# Run the test suite (node --test; scripts.test 显式列出 10 个测试文件，非整目录)
 npm test
-node --test tests/
 
 # Run a single test file
 node --test tests/test-sender-acl.js
@@ -80,7 +94,7 @@ ProfileDispatcher (src/dispatcher.js)
    │  • resolveProfile(subject) — matches [tag] prefix or falls back to default
    │  • cleanBody(msg) — strip HTML, quoted replies, Agently footer; truncate
    │  • _sessionId(msg, profile) — thread root via References[0] || In-Reply-To
-   │  • _spawnProfile(cfg, msg, sid, ...) — spawnSync with AGENT_* env vars
+   │  • _spawnProfile(cfg, msg, sid, ...) — child_process.spawn + Promise（避免阻塞 event loop，见 src/dispatcher.js:15-17）with AGENT_* env vars
    │  • session resume + fallback retry on expiry
    ▼
 Profile subprocess (profiles/*.js)
@@ -132,6 +146,7 @@ The session id is computed from the **email thread root** (References[0] → In-
 
 - `email-profiles.yaml` — profile routing (copy from `email-profiles.example.yaml`). `args` paths resolve relative to the yaml file's directory.
 - `email-acl.yaml` — sender ACL + admin senders + inspection report config (copy from `email-acl.example.yaml`). Optional; absence means open access.
+- `email-schedules.yaml` — 定时任务（cron）配置 (copy from `email-schedules.example.yaml`). Optional; 由 `src/schedule-runner.js`（node-cron）加载，文件缺失视为无任务。
 
 ACL merging (in `src/acl-config.js`): `acl-dynamic.json` (runtime, admin-controlled) is layered on top of the static yaml. Dynamic `allowed` evicts from merged `denied`; admin_senders / deny_action / report settings come only from the static file.
 
@@ -149,7 +164,7 @@ Admin commands (`/allow`, `/deny`, `/reset`, `/status`) are sent in the email bo
 - 修改 `dispatcher.js` 后验证 `cleanBody`（HTML/quote/footer 剥离）与 `resolveProfile`（subject 前缀匹配）——最易出错。
 - 新增 Profile 参考 `profiles/echo.js` 最小实现，确保 AgentProc P0 协议兼容；stream-json 系列可复用 `profiles/_stream_json.js`。
 - `email-profiles.yaml` 的 `args` 支持相对路径（相对于 yaml 文件目录）。
-- `marked` is the only non-trivial dependency — used by `convertMarkdownToHtml` for HTML reply formatting. Replies are always HTML; `bodyFormat: 'html'` is passed to `client.reply()`.
+- 依赖共 5 个（`package.json`）：`agentproc`（会话历史持久化）、`js-yaml`（YAML 解析）、`marked` + `sanitize-html`（Markdown → HTML 转换与净化）、`node-cron`（定时任务调度）。`marked` is used by `convertMarkdownToHtml` for HTML reply formatting. Replies are always HTML; `bodyFormat: 'html'` is passed to `client.reply()`.
 - The retry sweep runs on every poll interval at a half-interval offset (avoids bursting API calls alongside the main poll). Failed messages stay in the pending store across restarts.
 - `agently-cli +read` marks messages as read server-side, so `PendingStore.add()` is called *before* `read()` to avoid losing mails that fail during dispatch.
 

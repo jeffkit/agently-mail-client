@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-06-28
 
 ### Added
 - **HTML Email Support**: Agent 回复现在会自动将 Markdown 转换为格式化的 HTML 邮件
@@ -14,9 +14,9 @@
 - 日志输出从 "Replied" 改为 "Replied (HTML)" 以标识使用了 HTML 格式
 
 ### Dependencies
-- 新增依赖：`marked@18.0.5`
+- 新增依赖：`marked ^4.3.0`
 
-## [0.1.0] - 2026-06-XX
+## [0.1.0] - 2026-06-25
 
 ### Added
 - Initial release
