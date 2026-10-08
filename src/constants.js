@@ -4,7 +4,7 @@
  *
  * 这里汇总了原先散落在 dispatcher.js / agently-mail.js / profiles/*.js /
  * pending-store.js 中的魔法数字，避免配置漂移（例如 profile 超时必须 ≥
- * dispatcher 父进程超时，否则 spawnSync 会提前杀掉子进程）。
+ * dispatcher 父进程超时，否则 dispatcher 的父进程超时会先杀掉子进程）。
  */
 
 // Profile 子进程（dispatcher spawn）超时：5 分钟。
